@@ -366,7 +366,7 @@ async def telegram_webhook(
     x_telegram_bot_api_secret_token: str = Header(default="", alias="X-Telegram-Bot-Api-Secret-Token"),
     db: Session = Depends(get_db),
 ):
-    if not settings.telegram_webhook_secret or x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
+    if settings.telegram_webhook_secret and x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         return JSONResponse(
             status_code=403,
             content=TelegramWebhookResponse(ok=False, message="Forbidden").model_dump(),
