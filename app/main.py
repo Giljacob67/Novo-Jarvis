@@ -30,6 +30,21 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Database initialized")
     await telegram_service.start()
     logger.info("TelegramService httpx client started")
+
+    # Registrar webhook automaticamente se BASE_URL estiver configurada
+    base_url = settings.effective_base_url
+    if base_url:
+        webhook_url = f"{base_url}/webhooks/telegram"
+        try:
+            await telegram_service.set_webhook(
+                webhook_url, 
+                secret_token=settings.telegram_webhook_secret
+            )
+            logger.info("Telegram webhook registered automatically: %s", webhook_url)
+        except Exception as e:
+            logger.error("Failed to register Telegram webhook: %s", e)
+    else:
+        logger.warning("APP_BASE_URL not set — skipping automatic webhook registration")
     await start_scheduler()
     logger.info("Scheduler started")
     if settings.browser_automation_enabled:
