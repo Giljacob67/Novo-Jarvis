@@ -149,6 +149,33 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
             _log_action(db, "create_task", "success", {"title": title, "user_id": user_id})
         return result
 
+    if tool_name == "update_task":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado."}
+        task_id = tool_args.get("task_id", "")
+        title = tool_args.get("title")
+        notes = tool_args.get("notes")
+        due = tool_args.get("due")
+        result = await google_tasks_service.update_task(db, user_id, task_id, title=title, notes=notes, due=due)
+        if "error" not in result:
+            _log_action(db, "update_task", "success", {"task_id": task_id, "user_id": user_id})
+        return result
+
+    if tool_name == "delete_task":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado."}
+        task_id = tool_args.get("task_id", "")
+        result = await google_tasks_service.delete_task(db, user_id, task_id)
+        if "error" not in result:
+            _log_action(db, "delete_task", "success", {"task_id": task_id, "user_id": user_id})
+        return result
+
     if tool_name == "list_upcoming_events":
         if not db:
             return []
@@ -179,6 +206,43 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         )
         if "error" not in result:
             _log_action(db, "create_event", "success", {"title": title, "user_id": user_id})
+        return result
+
+    if tool_name == "update_event":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado."}
+        event_id = tool_args.get("event_id", "")
+        title = tool_args.get("title")
+        tz = tool_args.get("timezone", settings.timezone)
+        start_dt = None
+        end_dt = None
+        if tool_args.get("start_time"):
+            start_dt = parse_datetime_local(tool_args["start_time"], tz)
+        if tool_args.get("end_time"):
+            end_dt = parse_datetime_local(tool_args["end_time"], tz)
+        
+        result = await google_calendar_service.update_event(
+            db, user_id, event_id, title=title, start_dt=start_dt, end_dt=end_dt, tz=tz,
+            description=tool_args.get("description"),
+            location=tool_args.get("location"),
+        )
+        if "error" not in result:
+            _log_action(db, "update_event", "success", {"event_id": event_id, "user_id": user_id})
+        return result
+
+    if tool_name == "delete_event":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado."}
+        event_id = tool_args.get("event_id", "")
+        result = await google_calendar_service.delete_event(db, user_id, event_id)
+        if "error" not in result:
+            _log_action(db, "delete_event", "success", {"event_id": event_id, "user_id": user_id})
         return result
 
     if tool_name == "get_google_connection_status":
@@ -429,6 +493,13 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         from app.services import browser_service
         session_id = tool_args.get("session_id", "")
         return await browser_service.close_session(db, user_id, session_id)
+
+    if tool_name == "browser_get_elements":
+        if not db:
+            return {"error": "Banco não disponível"}
+        from app.services import browser_service
+        session_id = tool_args.get("session_id", "")
+        return await browser_service.get_interactive_elements(db, user_id, session_id)
 
     return {"error": f"Tool '{tool_name}' não reconhecida"}
 

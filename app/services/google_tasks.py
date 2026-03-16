@@ -122,3 +122,54 @@ async def complete_task(
     except Exception:
         logger.exception("Failed to complete task for user=%s", user_id)
         return {"error": "Erro ao completar tarefa no Google Tasks."}
+
+
+async def update_task(
+    db: Session,
+    user_id: str,
+    task_id: str,
+    title: str | None = None,
+    notes: str | None = None,
+    due: str | None = None,
+    tasklist_id: str | None = None,
+) -> dict[str, Any]:
+    service = _build_service(db, user_id)
+    if service is None:
+        return {"error": "Google não conectado."}
+
+    tl_id = tasklist_id or "@default"
+    try:
+        task = service.tasks().get(tasklist=tl_id, task=task_id).execute()
+        if title:
+            task["title"] = title
+        if notes is not None:
+            task["notes"] = notes
+        if due:
+            if "T" not in due:
+                due = f"{due}T00:00:00.000Z"
+            task["due"] = due
+
+        updated = service.tasks().update(tasklist=tl_id, task=task_id, body=task).execute()
+        return {"id": updated.get("id"), "title": updated.get("title"), "status": "updated"}
+    except Exception:
+        logger.exception("Failed to update task id=%s for user=%s", task_id, user_id)
+        return {"error": "Erro ao atualizar tarefa no Google Tasks."}
+
+
+async def delete_task(
+    db: Session,
+    user_id: str,
+    task_id: str,
+    tasklist_id: str | None = None,
+) -> dict[str, Any]:
+    service = _build_service(db, user_id)
+    if service is None:
+        return {"error": "Google não conectado."}
+
+    tl_id = tasklist_id or "@default"
+    try:
+        service.tasks().delete(tasklist=tl_id, task=task_id).execute()
+        return {"id": task_id, "status": "deleted"}
+    except Exception:
+        logger.exception("Failed to delete task id=%s for user=%s", task_id, user_id)
+        return {"error": "Erro ao excluir tarefa no Google Tasks."}

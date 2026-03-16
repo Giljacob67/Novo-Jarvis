@@ -701,3 +701,48 @@ async def expire_old_sessions(db: Session) -> int:
         db.commit()
         logger.info("Expired %d browser session(s)", expired_count)
     return expired_count
+
+
+async def get_interactive_elements(db: Session, user_id: str, session_id: str) -> dict:
+    session = get_session(db, user_id, session_id)
+    if not session:
+        return {"error": "Sessão não encontrada."}
+
+    pair = _get_live_page(session_id)
+    if not pair[1]:
+        return {"error": "Página não disponível."}
+    _, page = pair
+
+    try:
+        # Script to find buttons, links, and inputs
+        script = """
+        () => {
+            const elements = Array.from(document.querySelectorAll('button, a, input, select, textarea, [role="button"]'));
+            return elements.map(el => {
+                let rect = el.getBoundingClientRect();
+                return {
+                    tag: el.tagName.toLowerCase(),
+                    text: el.innerText.trim() || el.value || el.placeholder || el.ariaLabel || '',
+                    type: el.type || '',
+                    id: el.id,
+                    ariaLabel: el.ariaLabel,
+                    isVisible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none',
+                };
+            }).filter(el => el.isVisible && (el.text || el.id));
+        }
+        """
+        raw_elements = await page.evaluate(script)
+        
+        # Format for readability
+        formatted = []
+        for el in raw_elements:
+            desc = f"[{el['tag']}] {el['text']}"
+            if el['id']:
+                desc += f" (id: {el['id']})"
+            formatted.append(desc)
+
+        session.steps_taken += 1
+        db.commit()
+        return {"status": "ok", "elements": formatted[:50]} # Limit to 50 for brevity
+    except Exception as exc:
+        return {"error": f"Erro ao extrair elementos interativos: {exc}"}

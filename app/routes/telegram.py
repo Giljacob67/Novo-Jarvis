@@ -50,7 +50,9 @@ HELP_TEXT = (
     "/google — status da conexão Google\n"
     "/tasks — listar tarefas\n"
     "/newtask <titulo> — criar tarefa\n"
+    "/deltask <id> — excluir tarefa\n"
     "/newevent <titulo> | <inicio> | <fim> — criar evento\n"
+    "/delevent <id> — excluir evento\n"
     "/inbox — e-mails recentes da inbox\n"
     "/emailsearch <consulta> — buscar e-mails\n"
     "/thread <thread_id> — ver thread de e-mail\n"
@@ -537,8 +539,12 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
         return await _cmd_tasks(db, user_id)
     if text.startswith("/newtask"):
         return await _cmd_newtask(db, user_id, text)
+    if text.startswith("/deltask"):
+        return await _cmd_deltask(db, user_id, text)
     if text.startswith("/newevent"):
         return await _cmd_newevent(db, user_id, text)
+    if text.startswith("/delevent"):
+        return await _cmd_delevent(db, user_id, text)
 
     if text.startswith("/inboxsummary"):
         return await _cmd_inboxsummary(db, user_id)
@@ -738,6 +744,32 @@ async def _cmd_newtask(db: Session, user_id: str, text: str) -> str:
     if "error" in result:
         return f"❌ {result['error']}"
     return f'✅ Tarefa criada: "{result.get("title", title)}"'
+
+
+async def _cmd_deltask(db: Session, user_id: str, text: str) -> str:
+    task_id = text[len("/deltask"):].strip()
+    if not task_id:
+        return "Use: /deltask <id_da_tarefa>"
+    status = google_oauth_service.get_status(db, user_id)
+    if not status.get("connected"):
+        return "❌ Google não conectado."
+    result = await google_tasks_service.delete_task(db, user_id, task_id)
+    if "error" in result:
+        return f"❌ {result['error']}"
+    return f"✅ Tarefa excluída com sucesso."
+
+
+async def _cmd_delevent(db: Session, user_id: str, text: str) -> str:
+    event_id = text[len("/delevent"):].strip()
+    if not event_id:
+        return "Use: /delevent <id_do_evento>"
+    status = google_oauth_service.get_status(db, user_id)
+    if not status.get("connected"):
+        return "❌ Google não conectado."
+    result = await google_calendar_service.delete_event(db, user_id, event_id)
+    if "error" in result:
+        return f"❌ {result['error']}"
+    return f"✅ Evento excluído com sucesso."
 
 
 async def _cmd_newevent(db: Session, user_id: str, text: str) -> str:

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.google_credential import GoogleCredential
+from app.utils.encryption import encrypt_data, decrypt_data
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +82,12 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
 
     existing = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
     if existing:
-        existing.access_token = creds.token
-        existing.refresh_token = creds.refresh_token
+        existing.access_token = encrypt_data(creds.token)
+        existing.refresh_token = encrypt_data(creds.refresh_token) if creds.refresh_token else existing.refresh_token
         existing.token_expiry = token_expiry
         existing.scope = " ".join(creds.scopes or _get_scopes())
         existing.token_type = "Bearer"
-        existing.raw_json = creds.to_json()
+        existing.raw_json = encrypt_data(creds.to_json())
         existing.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(existing)
@@ -94,12 +95,12 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
 
     credential = GoogleCredential(
         user_id=user_id,
-        access_token=creds.token,
-        refresh_token=creds.refresh_token,
+        access_token=encrypt_data(creds.token),
+        refresh_token=encrypt_data(creds.refresh_token) if creds.refresh_token else None,
         token_expiry=token_expiry,
         scope=" ".join(creds.scopes or _get_scopes()),
         token_type="Bearer",
-        raw_json=creds.to_json(),
+        raw_json=encrypt_data(creds.to_json()),
     )
     db.add(credential)
     db.commit()
@@ -117,8 +118,8 @@ def refresh_credentials(db: Session, user_id: str) -> Credentials | None:
         expiry = expiry.replace(tzinfo=timezone.utc)
 
     credentials = Credentials(
-        token=cred.access_token,
-        refresh_token=cred.refresh_token,
+        token=decrypt_data(cred.access_token),
+        refresh_token=decrypt_data(cred.refresh_token),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
@@ -133,7 +134,7 @@ def refresh_credentials(db: Session, user_id: str) -> Credentials | None:
             new_expiry = credentials.expiry
             if new_expiry and new_expiry.tzinfo is None:
                 new_expiry = new_expiry.replace(tzinfo=timezone.utc)
-            cred.access_token = credentials.token
+            cred.access_token = encrypt_data(credentials.token)
             cred.token_expiry = new_expiry
             cred.updated_at = datetime.now(timezone.utc)
             db.commit()

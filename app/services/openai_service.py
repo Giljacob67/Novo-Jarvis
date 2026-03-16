@@ -80,6 +80,33 @@ TOOLS = [
     },
     {
         "type": "function",
+        "name": "update_task",
+        "description": "Atualiza uma tarefa existente no Google Tasks",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID da tarefa a ser atualizada"},
+                "title": {"type": "string", "description": "Novo título da tarefa"},
+                "notes": {"type": "string", "description": "Novas notas da tarefa"},
+                "due": {"type": "string", "description": "Nova data de vencimento (YYYY-MM-DD)"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "delete_task",
+        "description": "Exclui uma tarefa do Google Tasks",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "ID da tarefa a ser excluída"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "type": "function",
         "name": "list_upcoming_events",
         "description": "Lista próximos eventos do Google Calendar",
         "parameters": {
@@ -114,6 +141,35 @@ TOOLS = [
                 "location": {"type": "string", "description": "Local do evento"},
             },
             "required": ["title", "start_time", "end_time"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "update_event",
+        "description": "Atualiza um evento existente no Google Calendar",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "ID do evento a ser atualizado"},
+                "title": {"type": "string", "description": "Novo título do evento"},
+                "start_time": {"type": "string", "description": "Novo início (YYYY-MM-DD HH:MM)"},
+                "end_time": {"type": "string", "description": "Novo fim (YYYY-MM-DD HH:MM)"},
+                "description": {"type": "string", "description": "Nova descrição do evento"},
+                "location": {"type": "string", "description": "Novo local do evento"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "delete_event",
+        "description": "Exclui um evento do Google Calendar",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "ID do evento a ser excluído"},
+            },
+            "required": ["event_id"],
         },
     },
     {
@@ -437,11 +493,24 @@ TOOLS = [
         "description": "Retorna sugestões proativas: eventos próximos, tarefas vencendo, follow-ups e rascunhos pendentes",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "type": "function",
+        "name": "browser_get_elements",
+        "description": "Lista elementos interativos (botões, links, campos) da página atual do browser.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "ID da sessão de browser"},
+            },
+            "required": ["session_id"],
+        },
+    },
 ]
 
 SENSITIVE_KEYWORDS = [
     "apagar", "deletar", "excluir",
     "cancelar evento", "editar agenda", "modificar evento", "remover",
+    "delete_event", "delete_task", "update_event", "update_task",
 ]
 
 

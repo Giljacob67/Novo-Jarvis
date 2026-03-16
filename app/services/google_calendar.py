@@ -118,3 +118,57 @@ def _format_events(items: list[dict]) -> list[dict[str, Any]]:
             "description": item.get("description", ""),
         })
     return result
+
+
+async def update_event(
+    db: Session,
+    user_id: str,
+    event_id: str,
+    title: str | None = None,
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
+    tz: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+) -> dict[str, Any]:
+    service = _build_service(db, user_id)
+    if service is None:
+        return {"error": "Google não conectado."}
+
+    try:
+        # First get the existing event to patch it
+        event = service.events().get(calendarId="primary", eventId=event_id).execute()
+        
+        if title:
+            event["summary"] = title
+        if start_dt:
+            event["start"] = {"dateTime": start_dt.isoformat(), "timeZone": tz or "America/Sao_Paulo"}
+        if end_dt:
+            event["end"] = {"dateTime": end_dt.isoformat(), "timeZone": tz or "America/Sao_Paulo"}
+        if description is not None:
+            event["description"] = description
+        if location is not None:
+            event["location"] = location
+
+        updated = service.events().update(calendarId="primary", eventId=event_id, body=event).execute()
+        return {
+            "id": updated.get("id"),
+            "title": updated.get("summary"),
+            "status": "updated",
+        }
+    except Exception:
+        logger.exception("Failed to update event id=%s for user=%s", event_id, user_id)
+        return {"error": "Erro ao atualizar evento no Google Calendar."}
+
+
+async def delete_event(db: Session, user_id: str, event_id: str) -> dict[str, Any]:
+    service = _build_service(db, user_id)
+    if service is None:
+        return {"error": "Google não conectado."}
+
+    try:
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        return {"id": event_id, "status": "deleted"}
+    except Exception:
+        logger.exception("Failed to delete event id=%s for user=%s", event_id, user_id)
+        return {"error": "Erro ao excluir evento no Google Calendar."}
