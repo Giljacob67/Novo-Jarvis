@@ -142,19 +142,18 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
         raise ValueError(f"Falha ao trocar code por token no Google OAuth: {msg}") from exc
 
     creds = flow.credentials
-    if not creds.refresh_token:
-        raise ValueError(
-            "O Google não retornou um refresh_token. "
-            "Isso pode acontecer ao reconectar. "
-            "Remova o acesso do app em https://myaccount.google.com/permissions "
-            "e tente novamente via /connectgoogle."
-        )
 
     token_expiry = None
     if creds.expiry:
         token_expiry = creds.expiry.replace(tzinfo=timezone.utc) if creds.expiry.tzinfo is None else creds.expiry
 
     existing = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
+    if not creds.refresh_token and (existing is None or not existing.refresh_token):
+        raise ValueError(
+            "O Google não retornou um refresh_token. "
+            "Remova o acesso do app em https://myaccount.google.com/permissions "
+            "e tente novamente via /connectgoogle."
+        )
     if existing:
         existing.access_token = encrypt_data(creds.token)
         existing.refresh_token = encrypt_data(creds.refresh_token) if creds.refresh_token else existing.refresh_token
