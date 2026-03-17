@@ -1,7 +1,7 @@
 import os
 import logging
 from urllib.parse import urlparse
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from pydantic_settings import BaseSettings
 
@@ -23,8 +23,10 @@ def _resolve_base_url(explicit: str) -> str:
         # Se o usuário colou a URL completa de callback, pegamos só o esquema + domínio
         parsed = urlparse(val)
         if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}"
-        return val.rstrip("/")
+            val = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            val = val.rstrip("/")
+        return val
     return ""
 
 
@@ -37,6 +39,21 @@ class Settings(BaseSettings):
     )
     timezone: str = "America/Sao_Paulo"
     app_base_url: str = Field(default="", validation_alias="APP_BASE_URL")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fix_database_url_and_openai(cls, data):
+        if isinstance(data, dict):
+            # Railway às vezes fornece 'postgres://' mas SQLAlchemy exige 'postgresql://'
+            db_url = data.get("DATABASE_URL") or data.get("jarvis_database_url")
+            if db_url and db_url.startswith("postgres://"):
+                fixed = db_url.replace("postgres://", "postgresql://", 1)
+                data["jarvis_database_url"] = fixed
+            
+            # Garantir modelo padrão confiável
+            if not data.get("openai_model"):
+                data["openai_model"] = "gpt-4o-mini"
+        return data
 
     @property
     def effective_base_url(self) -> str:
