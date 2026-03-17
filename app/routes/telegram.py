@@ -65,6 +65,8 @@ HELP_TEXT = (
     "/inboxsummary — resumo da inbox\n"
     "/drive — listar arquivos recentes do Drive\n"
     "/drivesearch <consulta> — buscar arquivos no Drive\n"
+    "/drivefile <file_id> — detalhes de um arquivo no Drive\n"
+    "/drivesummary <file_id> [| foco] — resumir arquivo do Drive\n"
     "/approvals — ver aprovações pendentes\n"
     "/approve <id> — aprovar uma ação\n"
     "/reject <id> — rejeitar uma ação\n"
@@ -613,6 +615,10 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
         return await _cmd_inboxsummary(db, user_id)
     if text.startswith("/drivesearch"):
         return await _cmd_drivesearch(db, user_id, text)
+    if text.startswith("/drivesummary"):
+        return await _cmd_drivesummary(db, user_id, text)
+    if text.startswith("/drivefile"):
+        return await _cmd_drivefile(db, user_id, text)
     if text.startswith("/drive"):
         return await _cmd_drive(db, user_id)
     if text.startswith("/inbox"):
@@ -897,11 +903,14 @@ async def _cmd_drive(db: Session, user_id: str) -> str:
     lines = ["📁 Arquivos recentes no Drive:"]
     for i, item in enumerate(files[:10], 1):
         name = item.get("name", "(sem nome)")
+        file_id = item.get("id", "")
         mime = item.get("mimeType", "")
         modified = (item.get("modifiedTime", "") or "")[:10]
         link = item.get("webViewLink", "")
         suffix = f" — {modified}" if modified else ""
         lines.append(f"{i}. {name}{suffix}")
+        if file_id:
+            lines.append(f"   🆔 {file_id}")
         if mime:
             lines.append(f"   tipo: {mime}")
         if link:
@@ -929,16 +938,85 @@ async def _cmd_drivesearch(db: Session, user_id: str, text: str) -> str:
     lines = [f"🔎 Resultados no Drive para \"{query}\":"]
     for i, item in enumerate(files[:10], 1):
         name = item.get("name", "(sem nome)")
+        file_id = item.get("id", "")
         mime = item.get("mimeType", "")
         modified = (item.get("modifiedTime", "") or "")[:10]
         link = item.get("webViewLink", "")
         suffix = f" — {modified}" if modified else ""
         lines.append(f"{i}. {name}{suffix}")
+        if file_id:
+            lines.append(f"   🆔 {file_id}")
         if mime:
             lines.append(f"   tipo: {mime}")
         if link:
             lines.append(f"   🔗 {link}")
     return "\n".join(lines)
+
+
+async def _cmd_drivefile(db: Session, user_id: str, text: str) -> str:
+    file_id = text[len("/drivefile"):].strip()
+    if not file_id:
+        return "Use: /drivefile <file_id>"
+
+    drive_not_ready = _drive_not_ready_msg(db, user_id)
+    if drive_not_ready:
+        return drive_not_ready
+
+    result = await google_drive_service.get_file_details(db, user_id, file_id=file_id)
+    if "error" in result:
+        return f"❌ {result['error']}"
+
+    item = result.get("file", {})
+    name = item.get("name", "(sem nome)")
+    mime = item.get("mimeType", "")
+    modified = (item.get("modifiedTime", "") or "")[:19].replace("T", " ")
+    link = item.get("webViewLink", "")
+    size = item.get("size")
+    owner = ""
+    owners = item.get("owners") or []
+    if owners:
+        owner = owners[0].get("displayName") or owners[0].get("emailAddress", "")
+
+    lines = [f"📄 *{name}*", f"🆔 `{item.get('id', file_id)}`"]
+    if mime:
+        lines.append(f"Tipo: {mime}")
+    if modified:
+        lines.append(f"Atualizado: {modified}")
+    if size:
+        lines.append(f"Tamanho: {size} bytes")
+    if owner:
+        lines.append(f"Dono: {owner}")
+    if link:
+        lines.append(f"🔗 {link}")
+    return "\n".join(lines)
+
+
+async def _cmd_drivesummary(db: Session, user_id: str, text: str) -> str:
+    raw = text[len("/drivesummary"):].strip()
+    if not raw:
+        return "Use: /drivesummary <file_id> [| foco opcional]"
+
+    parts = [p.strip() for p in raw.split("|", 1)]
+    file_id = parts[0]
+    focus = parts[1] if len(parts) > 1 and parts[1] else None
+    if not file_id:
+        return "Use: /drivesummary <file_id> [| foco opcional]"
+
+    drive_not_ready = _drive_not_ready_msg(db, user_id)
+    if drive_not_ready:
+        return drive_not_ready
+
+    result = await google_drive_service.summarize_file(db, user_id, file_id=file_id, focus=focus)
+    if "error" in result:
+        return f"❌ {result['error']}"
+
+    item = result.get("file", {})
+    name = item.get("name", file_id)
+    summary = result.get("summary", "").strip()
+    if not summary:
+        return f"❌ Não consegui gerar o resumo de *{name}*."
+
+    return f"🧠 *Resumo de {name}:*\n\n{summary}"
 
 
 async def _cmd_inbox(db: Session, user_id: str) -> str:

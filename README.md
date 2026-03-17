@@ -49,6 +49,8 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 | `/inboxsummary` | Resumo da inbox (e-mails não lidos importantes) |
 | `/drive` | Lista arquivos recentes do Google Drive |
 | `/drivesearch <consulta>` | Busca arquivos por nome no Google Drive |
+| `/drivefile <file_id>` | Mostra detalhes de um arquivo do Drive por ID |
+| `/drivesummary <file_id> \| <foco opcional>` | Gera resumo de um arquivo do Drive |
 | `/voiceon` | Ativa respostas por áudio |
 | `/voiceoff` | Desativa respostas por áudio |
 | `/voicestatus` | Status das respostas por áudio |
@@ -230,6 +232,8 @@ python scripts/get_telegram_webhook_info.py
 
 1. `/drive` — lista arquivos recentes do Drive
 2. `/drivesearch contrato` — busca arquivos por nome
+3. `/drivefile <file_id>` — mostra metadados e link do arquivo
+4. `/drivesummary <file_id> | decisões e prazos` — gera resumo focado
 
 ### Voz no Telegram
 

@@ -42,6 +42,8 @@ Ferramentas disponíveis:
 - get_drive_connection_status(): status Drive
 - list_drive_files(limit): lista arquivos recentes do Drive
 - search_drive_files(query, limit): busca arquivos no Drive
+- get_drive_file_details(file_id): detalhes de um arquivo do Drive
+- summarize_drive_file(file_id, focus): resume arquivo do Drive
 - get_inbox_summary(max_results): resumo de inbox
 - search_emails(query, max_results): busca e-mails
 - get_email_thread(thread_id): lê thread

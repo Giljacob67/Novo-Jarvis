@@ -294,6 +294,33 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         limit = tool_args.get("limit", 10)
         return await google_drive_service.search_files(db, user_id, query=query, limit=limit)
 
+    if tool_name == "get_drive_file_details":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("drive_enabled"):
+            return {"error": "Google Drive não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Drive."}
+        file_id = str(tool_args.get("file_id", "")).strip()
+        if not file_id:
+            return {"error": "Informe o file_id do Drive."}
+        return await google_drive_service.get_file_details(db, user_id, file_id=file_id)
+
+    if tool_name == "summarize_drive_file":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("drive_enabled"):
+            return {"error": "Google Drive não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Drive."}
+        file_id = str(tool_args.get("file_id", "")).strip()
+        if not file_id:
+            return {"error": "Informe o file_id do Drive."}
+        focus = tool_args.get("focus")
+        return await google_drive_service.summarize_file(db, user_id, file_id=file_id, focus=focus)
+
     if tool_name == "get_inbox_summary":
         if not db:
             return {"error": "Banco não disponível"}

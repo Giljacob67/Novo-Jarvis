@@ -225,6 +225,31 @@ TOOLS = [
     },
     {
         "type": "function",
+        "name": "get_drive_file_details",
+        "description": "Obtém metadados e link de um arquivo específico do Google Drive pelo file_id",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "ID do arquivo no Google Drive"},
+            },
+            "required": ["file_id"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "summarize_drive_file",
+        "description": "Resume o conteúdo de um arquivo do Google Drive pelo file_id (suporte atual: Google Docs, Google Sheets e arquivos de texto)",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "ID do arquivo no Google Drive"},
+                "focus": {"type": "string", "description": "Foco opcional do resumo (ex: riscos, prazos, decisões)"},
+            },
+            "required": ["file_id"],
+        },
+    },
+    {
+        "type": "function",
         "name": "get_inbox_summary",
         "description": "Retorna um resumo dos e-mails não lidos mais importantes da inbox",
         "parameters": {
