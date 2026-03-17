@@ -156,6 +156,7 @@ class Settings(BaseSettings):
 
     openai_transcribe_model: str = "gpt-4o-mini-transcribe"
     openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_vision_model: str = "gpt-4o-mini"
     audio_api_key: str = Field(
         default="",
         validation_alias=AliasChoices(

@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import re
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Header, Request, Depends
 from fastapi.responses import JSONResponse
@@ -29,6 +31,7 @@ from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
 from app.services import google_drive_service
+from app.services import image_service
 from app.services import audio_service
 from app.services import approval_service
 from app.services import proactive_service
@@ -145,6 +148,121 @@ def _log_action(db: Session, event_type: str, status: str, details: dict) -> Non
     )
     db.add(entry)
     db.commit()
+
+
+_PT_MONTHS = {
+    "janeiro": 1,
+    "fevereiro": 2,
+    "marco": 3,
+    "março": 3,
+    "abril": 4,
+    "maio": 5,
+    "junho": 6,
+    "julho": 7,
+    "agosto": 8,
+    "setembro": 9,
+    "outubro": 10,
+    "novembro": 11,
+    "dezembro": 12,
+}
+
+
+def _pick_largest_photo_file_id(photo_sizes: list) -> str | None:
+    if not photo_sizes:
+        return None
+    best = max(
+        photo_sizes,
+        key=lambda p: (getattr(p, "file_size", 0) or 0, (getattr(p, "width", 0) or 0) * (getattr(p, "height", 0) or 0)),
+    )
+    return getattr(best, "file_id", None)
+
+
+async def _extract_photo_text(file_id: str) -> str:
+    try:
+        img_bytes = await telegram_service.download_file(file_id)
+        result = await image_service.extract_text_from_image_bytes(img_bytes)
+        return (result.get("text") or "").strip()
+    except Exception:
+        logger.exception("Failed to extract text from Telegram photo file_id=%s", file_id)
+        return ""
+
+
+def _pt_date_text_to_iso(raw: str) -> str | None:
+    text = (raw or "").strip().lower()
+    m_slash = re.search(r"\b(\d{2})/(\d{2})/(\d{4})\b", text)
+    if m_slash:
+        d, m, y = int(m_slash.group(1)), int(m_slash.group(2)), int(m_slash.group(3))
+        try:
+            return datetime(y, m, d).date().isoformat()
+        except ValueError:
+            return None
+
+    m_pt = re.search(r"\b(\d{1,2})\s+de\s+([a-zç]+)\s+de\s+(\d{4})\b", text)
+    if not m_pt:
+        return None
+    day = int(m_pt.group(1))
+    month_name = m_pt.group(2)
+    year = int(m_pt.group(3))
+    month = _PT_MONTHS.get(month_name)
+    if not month:
+        return None
+    try:
+        return datetime(year, month, day).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _extract_deadline_iso_from_ocr(ocr_text: str) -> str | None:
+    text = ocr_text or ""
+    patterns = [
+        r"Último\s+Dia\s+Prazo[:\s-]+([^\n\r]+)",
+        r"Data\s+Cumprimento[:\s-]+([^\n\r]+)",
+        r"Prazo\s+Cumprimento[:\s-]+([^\n\r]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        iso = _pt_date_text_to_iso(m.group(1))
+        if iso:
+            return iso
+    return _pt_date_text_to_iso(text)
+
+
+def _extract_process_number(ocr_text: str) -> str:
+    m = re.search(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", ocr_text or "")
+    return m.group(0) if m else ""
+
+
+def _should_schedule_deadline_request(text: str) -> bool:
+    t = (text or "").lower()
+    return (
+        "agende esse prazo" in t
+        or "agendar esse prazo" in t
+        or ("agende" in t and "prazo" in t)
+    )
+
+
+async def _maybe_schedule_from_photo_deadline(db: Session, user_id: str, text: str, ocr_text: str) -> str | None:
+    if not _should_schedule_deadline_request(text):
+        return None
+
+    due_iso = _extract_deadline_iso_from_ocr(ocr_text)
+    if not due_iso:
+        return "⚠️ Não consegui identificar a data do prazo na imagem. Tente enviar com mais nitidez ou informe a data."
+
+    tasks_not_ready = _tasks_not_ready_msg(db, user_id)
+    if tasks_not_ready:
+        return tasks_not_ready
+
+    proc = _extract_process_number(ocr_text)
+    title = f"Cumprir prazo processual {proc}".strip() if proc else "Cumprir prazo processual"
+    notes = "Gerado automaticamente a partir de imagem no Telegram.\n\nTrecho OCR:\n" + (ocr_text[:1200] or "(vazio)")
+
+    result = await google_tasks_service.create_task(db, user_id, title=title, notes=notes, due=due_iso)
+    if "error" in result:
+        return f"❌ Não consegui agendar o prazo automaticamente: {result['error']}"
+    return f"✅ Prazo agendado para {due_iso}: \"{result.get('title', title)}\""
 
 
 async def _handle_voice_message(
@@ -470,6 +588,32 @@ async def telegram_webhook(
             return TelegramWebhookResponse(ok=True, message="audio_processed" if persisted else "duplicate")
 
         text = (msg.text or msg.caption or "").strip()
+        ocr_text = ""
+        if msg.photo:
+            photo_file_id = _pick_largest_photo_file_id(msg.photo)
+            if photo_file_id:
+                ocr_text = await _extract_photo_text(photo_file_id)
+                if ocr_text:
+                    _log_action(db, "telegram_photo_ocr", "success", {
+                        "user_id": user_id,
+                        "update_id": update.update_id,
+                        "ocr_chars": len(ocr_text),
+                    })
+                    scheduled_reply = await _maybe_schedule_from_photo_deadline(db, user_id, text, ocr_text)
+                    if scheduled_reply:
+                        await telegram_service.send_message(chat_id, scheduled_reply)
+                        persisted = _mark_update_processed(db, update.update_id, user_id)
+                        return TelegramWebhookResponse(ok=True, message="processed" if persisted else "duplicate")
+
+                    if text:
+                        text = (
+                            f"{text}\n\n"
+                            "[TEXTO_EXTRAIDO_DA_IMAGEM]\n"
+                            f"{ocr_text[:4000]}\n"
+                            "[/TEXTO_EXTRAIDO_DA_IMAGEM]"
+                        )
+                    else:
+                        text = f"Analise a imagem com base no texto extraído abaixo:\n\n{ocr_text[:4000]}"
         if not text:
             _mark_update_processed(db, update.update_id, user_id)
             return TelegramWebhookResponse(ok=True, message="ignored")

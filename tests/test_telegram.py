@@ -171,6 +171,24 @@ def test_telegram_photo_caption_processed_as_text(client: TestClient, _patch_tel
         mock_gen.assert_called_once()
 
 
+@patch("app.routes.telegram.google_tasks_service.create_task", new_callable=AsyncMock)
+@patch("app.routes.telegram._extract_photo_text", new_callable=AsyncMock)
+def test_telegram_photo_deadline_auto_schedule(mock_ocr, mock_create_task, client: TestClient, _patch_telegram_send) -> None:
+    mock_ocr.return_value = "Último Dia Prazo: 27 de março de 2026"
+    mock_create_task.return_value = {"id": "task1", "title": "Cumprir prazo processual", "status": "needsAction"}
+    payload = _make_payload(
+        141,
+        caption="agende esse prazo",
+        photo=[{"file_id": "p2", "file_unique_id": "u2", "width": 1200, "height": 900}],
+    )
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["message"] == "processed"
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "Prazo agendado para 2026-03-27" in sent_text
+    mock_create_task.assert_called_once()
+
+
 def test_telegram_myday_does_not_call_openai(client: TestClient, _patch_telegram_send) -> None:
     with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
         payload = _make_payload(15, text="/myday")

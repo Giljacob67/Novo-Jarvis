@@ -51,6 +51,7 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 | `/drivesearch <consulta>` | Busca arquivos por nome no Google Drive |
 | `/drivefile <file_id>` | Mostra detalhes de um arquivo do Drive por ID |
 | `/drivesummary <file_id> \| <foco opcional>` | Gera resumo de um arquivo do Drive |
+| Foto/print + legenda | O Jarvis extrai texto da imagem para interpretar pedidos (ex.: agendar prazo) |
 | `/voiceon` | Ativa respostas por áudio |
 | `/voiceoff` | Desativa respostas por áudio |
 | `/voicestatus` | Status das respostas por áudio |
