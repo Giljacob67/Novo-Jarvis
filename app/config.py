@@ -8,25 +8,86 @@ from pydantic_settings import BaseSettings
 logger = logging.getLogger(__name__)
 
 
+def _normalize_base_url(raw: str) -> str:
+    """Normalize URL/domain to scheme + host only."""
+    val = (raw or "").strip()
+    if not val:
+        return ""
+
+    parsed = urlparse(val)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+    # Accept plain domains from env vars (e.g. RAILWAY_PUBLIC_DOMAIN).
+    if "://" not in val and "/" not in val and "." in val:
+        return f"https://{val}".rstrip("/")
+
+    return val.rstrip("/")
+
+
+def _url_host(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc.lower()
+
+
+def _resolve_railway_base_url() -> str:
+    """Best-effort Railway public URL detection."""
+    static_url = _normalize_base_url(os.environ.get("RAILWAY_STATIC_URL", ""))
+    if static_url:
+        return static_url
+
+    public_domain = _normalize_base_url(os.environ.get("RAILWAY_PUBLIC_DOMAIN", ""))
+    if public_domain:
+        return public_domain
+
+    return ""
 
 
 def _resolve_base_url(explicit: str) -> str:
-    """Return APP_BASE_URL (domain only), falling back to REPLIT_DOMAINS if not set."""
-    val = explicit.strip()
-    if not val:
-        domains = os.environ.get("REPLIT_DOMAINS", "").strip()
-        if domains:
-            domain = domains.split(",")[0].strip()
-            val = f"https://{domain}"
-    
-    if val:
-        # Se o usuário colou a URL completa de callback, pegamos só o esquema + domínio
-        parsed = urlparse(val)
-        if parsed.scheme and parsed.netloc:
-            val = f"{parsed.scheme}://{parsed.netloc}"
-        else:
-            val = val.rstrip("/")
-        return val
+    """
+    Return effective public base URL (scheme + host only).
+
+    Priority:
+    1) APP_BASE_URL
+    2) Railway auto-detected domain (RAILWAY_STATIC_URL / RAILWAY_PUBLIC_DOMAIN)
+    3) Replit domain (REPLIT_DOMAINS)
+
+    Safety rule:
+    - On Railway, if APP_BASE_URL points to a different *.railway.app host than the
+      current service domain, prefer Railway domain to avoid broken webhook URLs.
+    """
+    explicit_url = _normalize_base_url(explicit)
+    railway_url = _resolve_railway_base_url()
+
+    if railway_url:
+        if not explicit_url:
+            return railway_url
+
+        explicit_host = _url_host(explicit_url)
+        railway_host = _url_host(railway_url)
+        if explicit_host == railway_host:
+            return explicit_url
+
+        # Respect custom domains set via APP_BASE_URL.
+        if explicit_host and not explicit_host.endswith(".railway.app"):
+            return explicit_url
+
+        logger.warning(
+            "APP_BASE_URL (%s) differs from Railway domain (%s). "
+            "Using Railway domain to prevent invalid webhook registration.",
+            explicit_url,
+            railway_url,
+        )
+        return railway_url
+
+    if explicit_url:
+        return explicit_url
+
+    domains = os.environ.get("REPLIT_DOMAINS", "").strip()
+    if domains:
+        domain = domains.split(",")[0].strip()
+        return _normalize_base_url(domain)
+
     return ""
 
 
@@ -34,7 +95,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     # Alias para DATABASE_URL que o Railway fornece por padrão
     jarvis_database_url: str = Field(
-        default="sqlite:///./jarvis.db", 
+        default="sqlite:///./jarvis.db",
         validation_alias="DATABASE_URL"
     )
     timezone: str = "America/Sao_Paulo"
@@ -49,7 +110,7 @@ class Settings(BaseSettings):
             if db_url and db_url.startswith("postgres://"):
                 fixed = db_url.replace("postgres://", "postgresql://", 1)
                 data["jarvis_database_url"] = fixed
-            
+
             # Garantir modelo padrão confiável
             if not data.get("openai_model"):
                 data["openai_model"] = "gpt-4o-mini"

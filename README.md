@@ -128,7 +128,7 @@ Cadastre os seguintes Secrets no painel do Replit (Tools > Secrets):
 | `TELEGRAM_ALLOWED_USER_ID` | Recomendado | Seu user ID do Telegram (string) para filtrar mensagens |
 | `OPENAI_API_KEY` | Sim | Chave da API OpenAI |
 | `OPENAI_MODEL` | Opcional | Modelo a usar (padrão: `gpt-5-mini`) |
-| `APP_BASE_URL` | Sim | URL pública do app (ex: `https://jarvis-pessoal.replit.app`) |
+| `APP_BASE_URL` | Sim | URL pública do app (ex: `https://jarvis-pessoal.replit.app`). Em Railway, use o domínio público atual do serviço (sem `/api` e sem `/` no final). |
 | `GOOGLE_CLIENT_ID` | Sim | Client ID do Google OAuth |
 | `GOOGLE_CLIENT_SECRET` | Sim | Client Secret do Google OAuth |
 | `GOOGLE_REDIRECT_URI` | Sim | URI de callback (ex: `https://jarvis-pessoal.replit.app/auth/google/callback`) |
@@ -258,6 +258,7 @@ Para queries de usuário via `/emailsearch`, use formatos relativos como `newer_
 1. Certifique-se de que todos os Secrets obrigatórios estão cadastrados
 2. Configure `APP_ENV=production` nos Secrets
 3. Configure `APP_BASE_URL` com a URL pública do deploy (ex: `https://jarvis-pessoal.replit.app`)
+4. **Railway:** confirme que `APP_BASE_URL` e o domínio público do serviço são o mesmo host. Se divergir, o webhook do Telegram pode ficar em 404.
 4. Se quiser usar PostgreSQL em produção, configure `JARVIS_DATABASE_URL` com a connection string
 
 ### Publicando
