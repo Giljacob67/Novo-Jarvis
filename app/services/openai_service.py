@@ -609,6 +609,7 @@ def _runtime_capabilities_context() -> str:
         "Regra para perguntas sobre internet:\n"
         "- Se browser_access_effective=true: responda que há acesso supervisionado à web em domínios permitidos e ofereça /webresearch <url>.\n"
         "- Se browser_access_effective=false: responda que a navegação web não está ativa no momento e explique de forma breve o motivo (browser desativado ou sem domínios permitidos).\n"
+        "- Se browser_access_effective=false: nunca ofereça pesquisar no Google/internet e nunca peça confirmação para fazer busca web.\n"
         "- Nunca diga que tem acesso irrestrito à internet."
     )
 

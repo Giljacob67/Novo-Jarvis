@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -606,6 +607,37 @@ def _get_recent_messages(db: Session, conversation_id: int, limit: int) -> list[
     return list(reversed(msgs))
 
 
+def _browser_access_effective() -> bool:
+    if not settings.browser_automation_enabled:
+        return False
+    domains = [d.strip() for d in settings.browser_allowed_domains.split(",") if d.strip()]
+    return bool(domains)
+
+
+def _is_news_or_web_search_intent(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        k in t
+        for k in [
+            "notícia", "noticias", "news", "busque notícias", "buscar notícias",
+            "pesquise na internet", "procure na internet", "pesquise no google",
+            "busque na web", "pesquisar sobre",
+        ]
+    )
+
+
+def _is_affirmative(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in {"sim", "s", "ok", "claro", "pode", "pode sim", "yes", "y"}
+
+
+def _looks_like_web_offer(text: str) -> bool:
+    t = (text or "").lower()
+    return bool(
+        re.search(r"(acessar a internet|usar o google|pesquisar por você|quer que eu faça)", t)
+    )
+
+
 def _save_message(db: Session, conversation_id: int, role: str, text: str, channel: str = "telegram", raw_json: str | None = None) -> Message:
     msg = Message(
         conversation_id=conversation_id,
@@ -631,6 +663,21 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
 
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
+
+    if not _browser_access_effective():
+        fallback_reply = (
+            "No momento, a navegação web não está ativa aqui. "
+            "Se quiser, o administrador pode habilitar browser supervisionado (domínios permitidos)."
+        )
+        if _is_news_or_web_search_intent(text):
+            _save_message(db, conv.id, role="assistant", text=fallback_reply)
+            return fallback_reply
+
+        if _is_affirmative(text):
+            prev_assistant = next((m for m in reversed(recent[:-1]) if m.role == "assistant"), None)
+            if prev_assistant and _looks_like_web_offer(prev_assistant.text):
+                _save_message(db, conv.id, role="assistant", text=fallback_reply)
+                return fallback_reply
 
     memories = list_memories(db, user_id, limit=settings.context_max_memories)
 

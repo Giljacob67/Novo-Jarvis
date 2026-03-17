@@ -246,6 +246,8 @@ def _should_schedule_deadline_request(text: str) -> bool:
 async def _maybe_schedule_from_photo_deadline(db: Session, user_id: str, text: str, ocr_text: str) -> str | None:
     if not _should_schedule_deadline_request(text):
         return None
+    if not (ocr_text or "").strip():
+        return None
 
     due_iso = _extract_deadline_iso_from_ocr(ocr_text)
     if not due_iso:
@@ -263,6 +265,39 @@ async def _maybe_schedule_from_photo_deadline(db: Session, user_id: str, text: s
     if "error" in result:
         return f"❌ Não consegui agendar o prazo automaticamente: {result['error']}"
     return f"✅ Prazo agendado para {due_iso}: \"{result.get('title', title)}\""
+
+
+def _get_recent_ocr_context(db: Session, user_id: str, limit: int = 12) -> str:
+    conv = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == user_id)
+        .order_by(Conversation.created_at.desc())
+        .first()
+    )
+    if not conv:
+        return ""
+
+    msgs = (
+        db.query(Message)
+        .filter(Message.conversation_id == conv.id, Message.role == "user")
+        .order_by(Message.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for m in msgs:
+        txt = m.text or ""
+        start_tag = "[TEXTO_EXTRAIDO_DA_IMAGEM]"
+        end_tag = "[/TEXTO_EXTRAIDO_DA_IMAGEM]"
+        if start_tag in txt and end_tag in txt:
+            start = txt.find(start_tag) + len(start_tag)
+            end = txt.find(end_tag)
+            if end > start:
+                extracted = txt[start:end].strip()
+                if extracted:
+                    return extracted
+        if "Último Dia Prazo" in txt or "Data Cumprimento" in txt:
+            return txt
+    return ""
 
 
 async def _handle_voice_message(
@@ -614,6 +649,15 @@ async def telegram_webhook(
                         )
                     else:
                         text = f"Analise a imagem com base no texto extraído abaixo:\n\n{ocr_text[:4000]}"
+
+        if text and not ocr_text:
+            recent_ocr = _get_recent_ocr_context(db, user_id)
+            scheduled_reply = await _maybe_schedule_from_photo_deadline(db, user_id, text, recent_ocr)
+            if scheduled_reply:
+                await telegram_service.send_message(chat_id, scheduled_reply)
+                persisted = _mark_update_processed(db, update.update_id, user_id)
+                return TelegramWebhookResponse(ok=True, message="processed" if persisted else "duplicate")
+
         if not text:
             _mark_update_processed(db, update.update_id, user_id)
             return TelegramWebhookResponse(ok=True, message="ignored")
