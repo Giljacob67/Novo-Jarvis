@@ -6,7 +6,7 @@ VALID_HEADERS = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
 ALLOWED_USER_ID = 12345
 
 
-def _make_payload(update_id, text=None, voice=None, user_id=ALLOWED_USER_ID):
+def _make_payload(update_id, text=None, caption=None, photo=None, voice=None, user_id=ALLOWED_USER_ID):
     msg = {
         "message_id": 100 + update_id,
         "chat": {"id": user_id, "type": "private"},
@@ -14,6 +14,10 @@ def _make_payload(update_id, text=None, voice=None, user_id=ALLOWED_USER_ID):
     }
     if text is not None:
         msg["text"] = text
+    if caption is not None:
+        msg["caption"] = caption
+    if photo is not None:
+        msg["photo"] = photo
     if voice is not None:
         msg["voice"] = voice
     return {"update_id": update_id, "message": msg}
@@ -148,6 +152,22 @@ def test_telegram_free_text(client: TestClient, _patch_telegram_send) -> None:
         assert response.status_code == 200
         call_text = _patch_telegram_send.call_args[0][1]
         assert "Olá" in call_text
+        mock_gen.assert_called_once()
+
+
+def test_telegram_photo_caption_processed_as_text(client: TestClient, _patch_telegram_send) -> None:
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
+        mock_gen.return_value = "Tarefa criada para amanhã."
+        payload = _make_payload(
+            140,
+            caption="agende essa tarefa para amanhã: verificar o processo anexo",
+            photo=[{"file_id": "p1", "file_unique_id": "u1", "width": 640, "height": 480}],
+        )
+        response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+        assert response.status_code == 200
+        assert response.json()["message"] == "processed"
+        sent_text = _patch_telegram_send.call_args[0][1]
+        assert "Tarefa criada" in sent_text
         mock_gen.assert_called_once()
 
 

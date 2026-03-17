@@ -469,7 +469,7 @@ async def telegram_webhook(
             persisted = _mark_update_processed(db, update.update_id, user_id)
             return TelegramWebhookResponse(ok=True, message="audio_processed" if persisted else "duplicate")
 
-        text = (msg.text or "").strip()
+        text = (msg.text or msg.caption or "").strip()
         if not text:
             _mark_update_processed(db, update.update_id, user_id)
             return TelegramWebhookResponse(ok=True, message="ignored")
