@@ -73,7 +73,15 @@ async def google_auth_callback(
 
 
 @router.get("/google/status")
-async def google_auth_status(db: Session = Depends(get_db)):
+async def google_auth_status(
+    db: Session = Depends(get_db),
+    x_admin_key: str = Header(default="", alias="X-Admin-Key"),
+):
+    from app.routes.telegram import _check_admin_key
+    err = _check_admin_key(x_admin_key)
+    if err:
+        return err
+        
     user_id = settings.telegram_allowed_user_id or "default"
     status = google_oauth_service.get_status(db, user_id)
     return status

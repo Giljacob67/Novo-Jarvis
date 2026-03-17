@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting Jarvis Pessoal (env=%s, tz=%s)", settings.app_env, settings.timezone)
+    
+    # Diagnóstico de banco de dados
+    db_type = "PostgreSQL" if settings.jarvis_database_url.startswith("postgresql") else "SQLite"
+    logger.info("Database type detected: %s", db_type)
+    
+    # Diagnóstico de segurança
+    if not settings.google_encryption_key:
+        logger.error("!!! GOOGLE_ENCRYPTION_KEY is not set !!! Tokens will NOT be encrypted/decrypted correctly.")
+    else:
+        logger.info("Security check: Encryption key is configured.")
+
+    if not settings.telegram_webhook_secret:
+        logger.warning("TELEGRAM_WEBHOOK_SECRET is not set. Webhook has no extra validation layer.")
+
     init_db()
     logger.info("Database initialized")
     await telegram_service.start()
