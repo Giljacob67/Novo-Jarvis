@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Header, Request, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.db import get_db
@@ -334,6 +335,22 @@ def _check_admin_key(key: str) -> JSONResponse | None:
     return None
 
 
+def _mark_update_processed(db: Session, update_id: int, user_id: str) -> bool:
+    """
+    Persist processed update idempotently.
+    Returns False when another worker already persisted the same update_id.
+    """
+    try:
+        processed = ProcessedTelegramUpdate(update_id=update_id, user_id=str(user_id))
+        db.add(processed)
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        logger.info("Duplicate update_id=%s detected on persist, ignoring", update_id)
+        return False
+
+
 @router.post("/register")
 async def register_webhook(
     x_admin_key: str = Header(default="", alias="X-Admin-Key"),
@@ -394,46 +411,55 @@ async def telegram_webhook(
         logger.info("Duplicate update_id=%s, ignoring", update.update_id)
         return TelegramWebhookResponse(ok=True, message="duplicate")
 
-    processed = ProcessedTelegramUpdate(update_id=update.update_id, user_id=sender_id)
-    db.add(processed)
-    db.commit()
-
     chat_id = update.message.chat.id
     user_id = str(sender_id)
     msg = update.message
 
-    if msg.voice:
-        reply = await _handle_voice_message(
-            db=db, user_id=user_id, chat_id=chat_id, update_id=update.update_id,
-            file_id=msg.voice.file_id, file_unique_id=msg.voice.file_unique_id,
-            mime_type=msg.voice.mime_type, duration=msg.voice.duration,
-            file_size=msg.voice.file_size, source_type="voice",
+    try:
+        if msg.voice:
+            reply = await _handle_voice_message(
+                db=db, user_id=user_id, chat_id=chat_id, update_id=update.update_id,
+                file_id=msg.voice.file_id, file_unique_id=msg.voice.file_unique_id,
+                mime_type=msg.voice.mime_type, duration=msg.voice.duration,
+                file_size=msg.voice.file_size, source_type="voice",
+            )
+            if reply:
+                await telegram_service.send_message(chat_id, reply)
+            persisted = _mark_update_processed(db, update.update_id, user_id)
+            return TelegramWebhookResponse(ok=True, message="voice_processed" if persisted else "duplicate")
+
+        if msg.audio:
+            reply = await _handle_voice_message(
+                db=db, user_id=user_id, chat_id=chat_id, update_id=update.update_id,
+                file_id=msg.audio.file_id, file_unique_id=msg.audio.file_unique_id,
+                mime_type=msg.audio.mime_type, duration=msg.audio.duration,
+                file_size=msg.audio.file_size, source_type="audio",
+            )
+            if reply:
+                await telegram_service.send_message(chat_id, reply)
+            persisted = _mark_update_processed(db, update.update_id, user_id)
+            return TelegramWebhookResponse(ok=True, message="audio_processed" if persisted else "duplicate")
+
+        text = (msg.text or "").strip()
+        if not text:
+            _mark_update_processed(db, update.update_id, user_id)
+            return TelegramWebhookResponse(ok=True, message="ignored")
+
+        reply_text = await _route_command(db, user_id, chat_id, text, body)
+
+        if reply_text:
+            await telegram_service.send_message(chat_id, reply_text)
+
+        persisted = _mark_update_processed(db, update.update_id, user_id)
+        return TelegramWebhookResponse(ok=True, message="processed" if persisted else "duplicate")
+    except Exception:
+        # Don't mark this update as processed on failure: Telegram will retry.
+        db.rollback()
+        logger.exception("Telegram webhook processing failed for update_id=%s", update.update_id)
+        return JSONResponse(
+            status_code=500,
+            content=TelegramWebhookResponse(ok=False, message="temporary_error").model_dump(),
         )
-        if reply:
-            await telegram_service.send_message(chat_id, reply)
-        return TelegramWebhookResponse(ok=True, message="voice_processed")
-
-    if msg.audio:
-        reply = await _handle_voice_message(
-            db=db, user_id=user_id, chat_id=chat_id, update_id=update.update_id,
-            file_id=msg.audio.file_id, file_unique_id=msg.audio.file_unique_id,
-            mime_type=msg.audio.mime_type, duration=msg.audio.duration,
-            file_size=msg.audio.file_size, source_type="audio",
-        )
-        if reply:
-            await telegram_service.send_message(chat_id, reply)
-        return TelegramWebhookResponse(ok=True, message="audio_processed")
-
-    text = (msg.text or "").strip()
-    if not text:
-        return TelegramWebhookResponse(ok=True, message="ignored")
-
-    reply_text = await _route_command(db, user_id, chat_id, text, body)
-
-    if reply_text:
-        await telegram_service.send_message(chat_id, reply_text)
-
-    return TelegramWebhookResponse(ok=True, message="processed")
 
 
 async def _route_command(db: Session, user_id: str, chat_id: int, text: str, body: dict) -> str:
