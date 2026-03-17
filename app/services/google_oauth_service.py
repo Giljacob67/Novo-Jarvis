@@ -32,6 +32,19 @@ def _get_scopes() -> list[str]:
     return settings.all_google_scopes.split()
 
 
+def _to_naive_utc(dt: datetime | None) -> datetime | None:
+    """
+    google-auth comparisons use naive UTC datetimes internally.
+    Normalize any timezone-aware values to naive UTC to avoid:
+    TypeError: can't compare offset-naive and offset-aware datetimes
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def _state_signing_key() -> bytes:
     # Google client secret is always present when OAuth is enabled.
     secret = settings.google_client_secret or settings.telegram_webhook_secret
@@ -142,7 +155,7 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
     scope = token_payload.get("scope") or " ".join(_get_scopes())
     token_type = token_payload.get("token_type", "Bearer")
     expires_in = int(token_payload.get("expires_in", 0) or 0)
-    token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in) if expires_in > 0 else None
+    token_expiry = datetime.utcnow() + timedelta(seconds=expires_in) if expires_in > 0 else None
 
     existing = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
     if not refresh_token and (existing is None or not existing.refresh_token):
@@ -193,9 +206,7 @@ def refresh_credentials(db: Session, user_id: str) -> Credentials | None:
     if cred is None or not cred.access_token:
         return None
 
-    expiry = cred.token_expiry
-    if expiry and expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
+    expiry = _to_naive_utc(cred.token_expiry)
 
     credentials = Credentials(
         token=decrypt_data(cred.access_token),
@@ -211,9 +222,7 @@ def refresh_credentials(db: Session, user_id: str) -> Credentials | None:
         from google.auth.transport.requests import Request as GoogleAuthRequest
         try:
             credentials.refresh(GoogleAuthRequest())
-            new_expiry = credentials.expiry
-            if new_expiry and new_expiry.tzinfo is None:
-                new_expiry = new_expiry.replace(tzinfo=timezone.utc)
+            new_expiry = _to_naive_utc(credentials.expiry)
             cred.access_token = encrypt_data(credentials.token)
             cred.token_expiry = new_expiry
             cred.updated_at = datetime.now(timezone.utc)
