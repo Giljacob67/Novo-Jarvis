@@ -529,6 +529,12 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
 
     if text.startswith("/voiceon"):
         audio_service.set_voice_preference(db, user_id, True)
+        if not audio_service.is_audio_configured():
+            return (
+                "🔊 Preferência de áudio ativada para sua conta.\n"
+                "⚠️ Mas o provedor de áudio não está configurado (AUDIO_API_KEY/OPENAI_API_KEY). "
+                "Peça ao administrador para configurar."
+            )
         if settings.voice_responses_enabled:
             return "🔊 Respostas por áudio ativadas! Agora vou responder também com áudio quando você enviar mensagens."
         return (
@@ -542,11 +548,15 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
     if text.startswith("/voicestatus"):
         global_enabled = settings.voice_responses_enabled
         user_enabled = audio_service.get_voice_preference(db, user_id)
-        active = global_enabled and user_enabled
+        audio_ready = audio_service.is_audio_configured()
+        active = global_enabled and user_enabled and audio_ready
         lines = [
             "🎙️ Status de respostas por áudio:",
             f"  Global: {'✅ ativado' if global_enabled else '❌ desativado'}",
             f"  Sua preferência: {'✅ ativado' if user_enabled else '❌ desativado'}",
+            f"  Credencial de áudio: {'✅ configurada' if audio_ready else '❌ ausente'}",
+            f"  Modelo transcrição: {settings.openai_transcribe_model}",
+            f"  Modelo TTS: {settings.openai_tts_model}",
             f"  Resultado: {'🔊 áudio ativo' if active else '🔇 apenas texto'}",
         ]
         return "\n".join(lines)

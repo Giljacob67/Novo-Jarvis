@@ -156,6 +156,17 @@ class Settings(BaseSettings):
 
     openai_transcribe_model: str = "gpt-4o-mini-transcribe"
     openai_tts_model: str = "gpt-4o-mini-tts"
+    audio_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AUDIO_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENAIAPIKEY",
+            "OPENAI_APIKEY",
+            "OPENAI_KEY",
+        ),
+    )
+    audio_base_url: str = "https://api.openai.com/v1"
     voice_responses_enabled: bool = False
     voice_response_voice: str = "alloy"
     max_audio_file_mb: int = 19

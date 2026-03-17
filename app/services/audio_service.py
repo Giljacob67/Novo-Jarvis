@@ -16,7 +16,14 @@ VOICE_PREF_KEY = "voice_reply_enabled"
 
 def _get_openai_client():
     from openai import OpenAI
-    return OpenAI(api_key=settings.openai_api_key)
+    kwargs: dict[str, Any] = {"api_key": settings.audio_api_key}
+    if settings.audio_base_url.strip():
+        kwargs["base_url"] = settings.audio_base_url.strip()
+    return OpenAI(**kwargs)
+
+
+def is_audio_configured() -> bool:
+    return bool(settings.audio_api_key)
 
 
 async def transcribe_file(file_path: str, language: str = "pt") -> dict[str, Any]:
@@ -28,9 +35,9 @@ async def transcribe_file(file_path: str, language: str = "pt") -> dict[str, Any
             "text": None,
         }
 
-    if not settings.openai_api_key:
+    if not settings.audio_api_key:
         return {
-            "error": "OPENAI_API_KEY não configurada. Não é possível transcrever áudio.",
+            "error": "AUDIO_API_KEY/OPENAI_API_KEY não configurada. Não é possível transcrever áudio.",
             "text": None,
         }
 
@@ -71,8 +78,8 @@ async def transcribe_file(file_path: str, language: str = "pt") -> dict[str, Any
 
 
 async def synthesize_speech(text: str, voice: str | None = None, output_format: str = "ogg") -> dict[str, Any]:
-    if not settings.openai_api_key:
-        return {"error": "OPENAI_API_KEY não configurada.", "audio_bytes": None}
+    if not settings.audio_api_key:
+        return {"error": "AUDIO_API_KEY/OPENAI_API_KEY não configurada.", "audio_bytes": None}
 
     voice = voice or settings.voice_response_voice
 

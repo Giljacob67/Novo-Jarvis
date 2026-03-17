@@ -139,6 +139,8 @@ Cadastre os seguintes Secrets no painel do Replit (Tools > Secrets):
 | `GMAIL_MAX_LIST_RESULTS` | Opcional | Máximo de e-mails listados (padrão: `10`) |
 | `OPENAI_TRANSCRIBE_MODEL` | Opcional | Modelo de transcrição (padrão: `gpt-4o-mini-transcribe`) |
 | `OPENAI_TTS_MODEL` | Opcional | Modelo de síntese de voz (padrão: `gpt-4o-mini-tts`) |
+| `AUDIO_API_KEY` | Opcional* | Chave para transcrição/TTS. Se vazio, usa aliases de OpenAI (`OPENAI_API_KEY`, `OPENAIAPIKEY`, etc.) |
+| `AUDIO_BASE_URL` | Opcional | Base URL do provedor de áudio compatível com OpenAI (padrão: `https://api.openai.com/v1`) |
 | `VOICE_RESPONSES_ENABLED` | Opcional | `false` (padrão) — ativa respostas por áudio globalmente |
 | `VOICE_RESPONSE_VOICE` | Opcional | Voz para TTS (padrão: `alloy`) |
 | `MAX_AUDIO_FILE_MB` | Opcional | Limite de tamanho de áudio em MB (padrão: `19`, máx: `20`) |
