@@ -1,24 +1,42 @@
 import os
+import logging
+from urllib.parse import urlparse
+from pydantic import Field
 
 from pydantic_settings import BaseSettings
 
+logger = logging.getLogger(__name__)
+
+
+
 
 def _resolve_base_url(explicit: str) -> str:
-    """Return APP_BASE_URL, falling back to REPLIT_DOMAINS if not set."""
-    if explicit.strip():
-        return explicit.rstrip("/")
-    domains = os.environ.get("REPLIT_DOMAINS", "").strip()
-    if domains:
-        domain = domains.split(",")[0].strip()
-        return f"https://{domain}"
+    """Return APP_BASE_URL (domain only), falling back to REPLIT_DOMAINS if not set."""
+    val = explicit.strip()
+    if not val:
+        domains = os.environ.get("REPLIT_DOMAINS", "").strip()
+        if domains:
+            domain = domains.split(",")[0].strip()
+            val = f"https://{domain}"
+    
+    if val:
+        # Se o usuário colou a URL completa de callback, pegamos só o esquema + domínio
+        parsed = urlparse(val)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return val.rstrip("/")
     return ""
 
 
 class Settings(BaseSettings):
     app_env: str = "development"
-    jarvis_database_url: str = "sqlite:///./jarvis.db"
+    # Alias para DATABASE_URL que o Railway fornece por padrão
+    jarvis_database_url: str = Field(
+        default="sqlite:///./jarvis.db", 
+        validation_alias="DATABASE_URL"
+    )
     timezone: str = "America/Sao_Paulo"
-    app_base_url: str = ""
+    app_base_url: str = Field(default="", validation_alias="APP_BASE_URL")
 
     @property
     def effective_base_url(self) -> str:

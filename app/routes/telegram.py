@@ -381,8 +381,8 @@ async def telegram_webhook(
 
     if update.message and update.message.from_user:
         sender_id = update.message.from_user.id
-        if settings.telegram_allowed_user_id and sender_id != settings.telegram_allowed_user_id:
-            logger.info("Ignoring message from unauthorized user_id=%s", sender_id)
+        if settings.telegram_allowed_user_id and str(sender_id) != settings.telegram_allowed_user_id:
+            logger.info("Ignoring message from unauthorized user_id=%s (allowed=%s)", sender_id, settings.telegram_allowed_user_id)
             return TelegramWebhookResponse(ok=True, message="ignored")
     else:
         return TelegramWebhookResponse(ok=True, message="ignored")

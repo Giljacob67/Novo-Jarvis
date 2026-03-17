@@ -51,11 +51,12 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     if base_url:
         webhook_url = f"{base_url}/webhooks/telegram"
         try:
-            await telegram_service.set_webhook(
+            result = await telegram_service.set_webhook(
                 webhook_url, 
                 secret_token=settings.telegram_webhook_secret
             )
-            logger.info("Telegram webhook registered automatically: %s", webhook_url)
+            logger.info("Telegram webhook registration result: %s", result)
+            logger.info("Telegram webhook successfully registered at: %s", webhook_url)
         except Exception as e:
             logger.error("Failed to register Telegram webhook: %s", e)
     else:
