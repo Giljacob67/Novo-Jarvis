@@ -38,6 +38,10 @@ async def debug_telegram():
             "allowed_user_id": settings.telegram_allowed_user_id,
             "openai_api_key_configured": bool(settings.openai_api_key),
             "openai_model": settings.openai_model,
+            "llm_provider": settings.llm_provider,
+            "browser_automation_enabled": settings.browser_automation_enabled,
+            "browser_allowed_domains_configured": bool(settings.browser_allowed_domains.strip()),
+            "browser_allowed_domains": settings.browser_allowed_domains,
         },
         "telegram_webhook_info": webhook_info
     }

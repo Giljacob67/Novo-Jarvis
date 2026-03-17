@@ -526,6 +526,29 @@ SENSITIVE_KEYWORDS = [
 ]
 
 
+def _runtime_capabilities_context() -> str:
+    browser_enabled = settings.browser_automation_enabled
+    allowed_raw = settings.browser_allowed_domains.strip()
+    allowed_domains = [d.strip() for d in allowed_raw.split(",") if d.strip()]
+    browser_effective = browser_enabled and bool(allowed_domains)
+
+    if allowed_domains:
+        domains_text = ", ".join(allowed_domains)
+    else:
+        domains_text = "nenhum"
+
+    return (
+        "Capacidades de runtime (não invente):\n"
+        f"- browser_automation_enabled: {str(browser_enabled).lower()}\n"
+        f"- browser_access_effective: {str(browser_effective).lower()}\n"
+        f"- browser_allowed_domains: {domains_text}\n\n"
+        "Regra para perguntas sobre internet:\n"
+        "- Se browser_access_effective=true: responda que há acesso supervisionado à web em domínios permitidos e ofereça /webresearch <url>.\n"
+        "- Se browser_access_effective=false: responda que a navegação web não está ativa no momento e explique de forma breve o motivo (browser desativado ou sem domínios permitidos).\n"
+        "- Nunca diga que tem acesso irrestrito à internet."
+    )
+
+
 class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
@@ -589,6 +612,7 @@ class OpenAIService:
         mem_ctx = format_memories_context(memories)
         if mem_ctx:
             system_content += f"\n\n{mem_ctx}"
+        system_content += f"\n\n{_runtime_capabilities_context()}"
 
         input_messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
