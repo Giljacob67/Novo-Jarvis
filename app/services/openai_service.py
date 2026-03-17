@@ -507,6 +507,18 @@ TOOLS = [
     },
 ]
 
+CHAT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool.get("parameters", {"type": "object", "properties": {}, "required": []}),
+        },
+    }
+    for tool in TOOLS
+]
+
 SENSITIVE_KEYWORDS = [
     "apagar", "deletar", "excluir",
     "cancelar evento", "editar agenda", "modificar evento", "remover",
@@ -517,13 +529,43 @@ SENSITIVE_KEYWORDS = [
 class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
+        self._client_provider: str = ""
+
+    def _effective_provider(self) -> str:
+        provider = (settings.llm_provider or "openai").strip().lower()
+        return provider if provider in {"openai", "openrouter"} else "openai"
+
+    def _effective_model(self) -> str:
+        if self._effective_provider() == "openrouter" and settings.openrouter_model.strip():
+            return settings.openrouter_model.strip()
+        return settings.openai_model
 
     def _get_client(self) -> Any:
-        if not settings.openai_api_key:
+        provider = self._effective_provider()
+        if provider == "openrouter":
+            api_key = settings.openrouter_api_key or settings.openai_api_key
+        else:
+            api_key = settings.openai_api_key
+
+        if not api_key:
             return None
-        if self._client is None:
+
+        if self._client is None or self._client_provider != provider:
             from openai import OpenAI
-            self._client = OpenAI(api_key=settings.openai_api_key)
+            if provider == "openrouter":
+                headers: dict[str, str] = {
+                    "X-Title": "Jarvis Pessoal",
+                }
+                if settings.effective_base_url:
+                    headers["HTTP-Referer"] = settings.effective_base_url
+                self._client = OpenAI(
+                    api_key=api_key,
+                    base_url=settings.openrouter_base_url,
+                    default_headers=headers,
+                )
+            else:
+                self._client = OpenAI(api_key=api_key)
+            self._client_provider = provider
         return self._client
 
     async def generate_reply(
@@ -538,8 +580,8 @@ class OpenAIService:
         client = self._get_client()
         if client is None:
             return (
-                "A integração com OpenAI ainda não foi configurada. "
-                "Peça ao administrador para definir a OPENAI_API_KEY. "
+                "A integração de LLM ainda não foi configurada. "
+                "Peça ao administrador para definir OPENAI_API_KEY ou OPENROUTER_API_KEY. "
                 "Enquanto isso, você pode usar /myday, /remember e /memories."
             )
 
@@ -554,11 +596,21 @@ class OpenAIService:
         input_messages.extend(recent_messages)
         input_messages.append({"role": "user", "content": user_text})
 
+        if self._effective_provider() == "openrouter":
+            return await self._generate_reply_openrouter(
+                client=client,
+                user_id=user_id,
+                user_text=user_text,
+                input_messages=input_messages,
+                tool_executor=tool_executor,
+                db=db,
+            )
+
         max_rounds = settings.openai_max_tool_rounds
         for round_num in range(max_rounds + 1):
             try:
                 kwargs: dict[str, Any] = {
-                    "model": settings.openai_model,
+                    "model": self._effective_model(),
                     "input": input_messages,
                 }
                 if round_num < max_rounds:
@@ -603,6 +655,92 @@ class OpenAIService:
                 break
 
         return final_text or "Desculpe, não consegui gerar uma resposta. Tente novamente."
+
+    async def _generate_reply_openrouter(
+        self,
+        client: Any,
+        user_id: str,
+        user_text: str,
+        input_messages: list[dict[str, Any]],
+        tool_executor: Any = None,
+        db: Any = None,
+    ) -> str:
+        messages: list[dict[str, Any]] = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in input_messages
+        ]
+
+        max_rounds = settings.openai_max_tool_rounds
+        for round_num in range(max_rounds + 1):
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": self._effective_model(),
+                    "messages": messages,
+                }
+                if round_num < max_rounds:
+                    kwargs["tools"] = CHAT_TOOLS
+                response = client.chat.completions.create(**kwargs)
+            except Exception as e:
+                logger.exception("OpenRouter/OpenAI-compatible API error: %s", e)
+                return "Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em instantes."
+
+            choice = response.choices[0].message if response.choices else None
+            if not choice:
+                return "Desculpe, não consegui gerar uma resposta. Tente novamente."
+
+            tool_calls = choice.tool_calls or []
+            assistant_text = choice.content or ""
+            if isinstance(assistant_text, list):
+                assistant_text = "".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in assistant_text
+                )
+
+            if tool_calls and tool_executor and round_num < max_rounds:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_text or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments or "{}",
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    }
+                )
+
+                for tc in tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    if _is_sensitive_action(tool_name, tool_args, user_text):
+                        tool_result = _log_sensitive_action(db, tool_name, tool_args, user_id)
+                    else:
+                        tool_result = await tool_executor(tool_name, tool_args, db, user_id)
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(tool_result, ensure_ascii=False),
+                        }
+                    )
+                continue
+
+            if assistant_text:
+                return assistant_text
+            return "Desculpe, não consegui gerar uma resposta. Tente novamente."
+
+        return "Desculpe, não consegui gerar uma resposta. Tente novamente."
 
 
 def _is_sensitive_action(tool_name: str, tool_args: dict, user_text: str) -> bool:
