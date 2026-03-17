@@ -5,12 +5,12 @@ import base64
 import hmac
 import hashlib
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -83,38 +83,23 @@ def _verify_signed_state(state: str) -> str | None:
     return user_id
 
 
-def _make_flow() -> Flow:
-    client_config = {
-        "web": {
-            "client_id": settings.google_client_id,
-            "client_secret": settings.google_client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [settings.effective_google_redirect_uri],
-        }
-    }
-    flow = Flow.from_client_config(
-        client_config,
-        scopes=_get_scopes(),
-        redirect_uri=settings.effective_google_redirect_uri,
-    )
-    return flow
-
-
 def get_auth_url(user_id: str) -> str:
-    flow = _make_flow()
     # Signed state makes callback validation work across restarts/instances.
     state = _create_signed_state(user_id)
     # Keep legacy map assignment for temporary compatibility (can be removed later).
     _pending_states[state] = user_id
 
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        state=state,
-        prompt="consent",
-    )
-    return auth_url
+    params = {
+        "client_id": settings.google_client_id,
+        "redirect_uri": settings.effective_google_redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(_get_scopes()),
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "state": state,
+    }
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
 
 
 def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
@@ -125,9 +110,20 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
     if user_id is None:
         raise ValueError("State inválido ou expirado. Tente conectar novamente via /connectgoogle.")
 
-    flow = _make_flow()
     try:
-        flow.fetch_token(code=code)
+        resp = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": settings.effective_google_redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        token_payload = resp.json()
     except Exception as exc:
         logger.exception("Google OAuth token exchange failed")
         msg = str(exc)
@@ -141,26 +137,27 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
             ) from exc
         raise ValueError(f"Falha ao trocar code por token no Google OAuth: {msg}") from exc
 
-    creds = flow.credentials
-
-    token_expiry = None
-    if creds.expiry:
-        token_expiry = creds.expiry.replace(tzinfo=timezone.utc) if creds.expiry.tzinfo is None else creds.expiry
+    access_token = token_payload.get("access_token", "")
+    refresh_token = token_payload.get("refresh_token")
+    scope = token_payload.get("scope") or " ".join(_get_scopes())
+    token_type = token_payload.get("token_type", "Bearer")
+    expires_in = int(token_payload.get("expires_in", 0) or 0)
+    token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in) if expires_in > 0 else None
 
     existing = db.query(GoogleCredential).filter(GoogleCredential.user_id == user_id).first()
-    if not creds.refresh_token and (existing is None or not existing.refresh_token):
+    if not refresh_token and (existing is None or not existing.refresh_token):
         raise ValueError(
             "O Google não retornou um refresh_token. "
             "Remova o acesso do app em https://myaccount.google.com/permissions "
             "e tente novamente via /connectgoogle."
         )
     if existing:
-        existing.access_token = encrypt_data(creds.token)
-        existing.refresh_token = encrypt_data(creds.refresh_token) if creds.refresh_token else existing.refresh_token
+        existing.access_token = encrypt_data(access_token)
+        existing.refresh_token = encrypt_data(refresh_token) if refresh_token else existing.refresh_token
         existing.token_expiry = token_expiry
-        existing.scope = " ".join(creds.scopes or _get_scopes())
-        existing.token_type = "Bearer"
-        existing.raw_json = encrypt_data(creds.to_json())
+        existing.scope = scope
+        existing.token_type = token_type
+        existing.raw_json = encrypt_data(json.dumps(token_payload, ensure_ascii=False))
         existing.updated_at = datetime.now(timezone.utc)
         try:
             db.commit()
@@ -173,12 +170,12 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
 
     credential = GoogleCredential(
         user_id=user_id,
-        access_token=encrypt_data(creds.token),
-        refresh_token=encrypt_data(creds.refresh_token) if creds.refresh_token else None,
+        access_token=encrypt_data(access_token),
+        refresh_token=encrypt_data(refresh_token) if refresh_token else None,
         token_expiry=token_expiry,
-        scope=" ".join(creds.scopes or _get_scopes()),
-        token_type="Bearer",
-        raw_json=encrypt_data(creds.to_json()),
+        scope=scope,
+        token_type=token_type,
+        raw_json=encrypt_data(json.dumps(token_payload, ensure_ascii=False)),
     )
     db.add(credential)
     try:
