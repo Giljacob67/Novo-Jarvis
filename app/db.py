@@ -4,10 +4,21 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.config import settings
 
 
-engine = create_engine(
-    settings.jarvis_database_url,
-    connect_args={"check_same_thread": False} if settings.jarvis_database_url.startswith("sqlite") else {},
-)
+# Configuração do engine com pooling otimizado para produção
+if settings.jarvis_database_url.startswith("postgresql"):
+    engine = create_engine(
+        settings.jarvis_database_url,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=30,
+        pool_recycle=1800,
+        pool_pre_ping=True,
+    )
+else:
+    engine = create_engine(
+        settings.jarvis_database_url,
+        connect_args={"check_same_thread": False},
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

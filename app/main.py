@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -83,6 +84,22 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = (time.time() - start_time) * 1000
+    formatted_process_time = "{0:.2f}ms".format(process_time)
+    logger.info(
+        "[%s] %s - %d (%s)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        formatted_process_time
+    )
+    return response
 
 
 @app.exception_handler(Exception)

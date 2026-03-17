@@ -168,7 +168,7 @@ async def _cleanup_browser_sessions() -> None:
         from app.services import browser_service
         from app.utils.browser_utils import clean_old_browser_artifacts
         expired = await browser_service.expire_old_sessions(db)
-        cleaned = clean_old_browser_artifacts(db, older_than_days=7)
+        cleaned = clean_old_browser_artifacts(db, older_than_days=1)
         logger.info("Browser cleanup: expired=%d sessions, cleaned=%d artifacts", expired, cleaned)
     except Exception:
         logger.exception("Browser session cleanup failed")
