@@ -34,6 +34,14 @@ class TelegramService:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
         logger.info("Sending message to chat_id=%s (len=%d)", chat_id, len(text))
         resp = await self.client.post(url, json=payload)
+        if resp.status_code == 400:
+            # Fallback for Markdown entity parsing errors or other formatting issues.
+            logger.warning(
+                "Telegram rejected Markdown message (chat_id=%s). Falling back to plain text.",
+                chat_id,
+            )
+            fallback_payload = {"chat_id": chat_id, "text": text}
+            resp = await self.client.post(url, json=fallback_payload)
         resp.raise_for_status()
         return resp.json()
 
