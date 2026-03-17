@@ -108,6 +108,18 @@ def _gmail_not_ready_msg(db: Session, user_id: str) -> str | None:
     return None
 
 
+def _tasks_not_ready_msg(db: Session, user_id: str) -> str | None:
+    status = google_oauth_service.get_status(db, user_id)
+    if not status.get("connected"):
+        return "❌ Google não conectado. Use /connectgoogle para conectar sua conta primeiro."
+    if not status.get("tasks_enabled"):
+        return (
+            "⚠️ Sua conta Google está conectada, mas sem permissão do Google Tasks. "
+            "Use /connectgoogle para reconectar e autorizar Tasks."
+        )
+    return None
+
+
 def _log_action(db: Session, event_type: str, status: str, details: dict) -> None:
     entry = ActionLog(
         event_type=event_type,
@@ -756,9 +768,9 @@ def _cmd_google_status(db: Session, user_id: str) -> str:
 
 
 async def _cmd_tasks(db: Session, user_id: str) -> str:
-    status = google_oauth_service.get_status(db, user_id)
-    if not status.get("connected"):
-        return "❌ Google não conectado. Use /connectgoogle para conectar sua conta primeiro."
+    tasks_not_ready = _tasks_not_ready_msg(db, user_id)
+    if tasks_not_ready:
+        return tasks_not_ready
     tasks = await google_tasks_service.list_tasks(db, user_id, limit=15)
     if not tasks:
         return "✅ Nenhuma tarefa pendente!"
@@ -773,9 +785,9 @@ async def _cmd_newtask(db: Session, user_id: str, text: str) -> str:
     title = text[len("/newtask"):].strip()
     if not title:
         return "Use: /newtask <título da tarefa>"
-    status = google_oauth_service.get_status(db, user_id)
-    if not status.get("connected"):
-        return "❌ Google não conectado. Use /connectgoogle para conectar sua conta primeiro."
+    tasks_not_ready = _tasks_not_ready_msg(db, user_id)
+    if tasks_not_ready:
+        return tasks_not_ready
     result = await google_tasks_service.create_task(db, user_id, title)
     if "error" in result:
         return f"❌ {result['error']}"
@@ -786,9 +798,9 @@ async def _cmd_deltask(db: Session, user_id: str, text: str) -> str:
     task_id = text[len("/deltask"):].strip()
     if not task_id:
         return "Use: /deltask <id_da_tarefa>"
-    status = google_oauth_service.get_status(db, user_id)
-    if not status.get("connected"):
-        return "❌ Google não conectado."
+    tasks_not_ready = _tasks_not_ready_msg(db, user_id)
+    if tasks_not_ready:
+        return tasks_not_ready
     result = await google_tasks_service.delete_task(db, user_id, task_id)
     if "error" in result:
         return f"❌ {result['error']}"

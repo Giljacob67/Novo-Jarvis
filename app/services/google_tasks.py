@@ -3,12 +3,37 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.services.google_oauth_service import get_credentials
+from app.services.google_oauth_service import get_credentials, get_status
 
 logger = logging.getLogger(__name__)
 
 
+def _format_google_tasks_error(exc: Exception, action: str) -> str:
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    detail = ""
+    content = getattr(exc, "content", None)
+    if isinstance(content, (bytes, bytearray)):
+        detail = content.decode("utf-8", errors="ignore")
+    elif content is not None:
+        detail = str(content)
+    else:
+        detail = str(exc)
+
+    if status == 401:
+        return "Sessão Google expirada ou inválida. Use /connectgoogle para reconectar."
+    if status == 403:
+        if "insufficient" in detail.lower() or "scope" in detail.lower():
+            return "Permissão insuficiente para Google Tasks. Use /connectgoogle para autorizar Tasks."
+        return "Acesso negado pelo Google Tasks (403). Verifique permissões da conta."
+    if status == 404:
+        return "Lista de tarefas padrão não encontrada. Abra o Google Tasks uma vez e tente novamente."
+    return f"Erro no Google Tasks ao {action}. Tente novamente em instantes."
+
+
 def _build_service(db: Session, user_id: str):
+    status = get_status(db, user_id)
+    if not status.get("connected") or not status.get("tasks_enabled"):
+        return None
     creds = get_credentials(db, user_id)
     if creds is None:
         return None
@@ -76,9 +101,17 @@ async def create_task(
     due: str | None = None,
     tasklist_id: str | None = None,
 ) -> dict[str, Any]:
+    if not title.strip():
+        return {"error": "Título da tarefa vazio. Informe um título para criar a tarefa."}
+
     service = _build_service(db, user_id)
     if service is None:
-        return {"error": "Google não conectado. Use /connectgoogle para conectar."}
+        status = get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado. Use /connectgoogle para conectar."}
+        if not status.get("tasks_enabled"):
+            return {"error": "Google Tasks não autorizado. Use /connectgoogle para liberar o escopo de Tasks."}
+        return {"error": "Não foi possível validar credenciais Google. Use /connectgoogle para reconectar."}
 
     tl_id = tasklist_id or "@default"
     body: dict[str, Any] = {"title": title}
@@ -97,9 +130,9 @@ async def create_task(
             "title": created.get("title"),
             "status": created.get("status"),
         }
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to create task for user=%s", user_id)
-        return {"error": "Erro ao criar tarefa no Google Tasks."}
+        return {"error": _format_google_tasks_error(e, "criar tarefa")}
 
 
 async def complete_task(

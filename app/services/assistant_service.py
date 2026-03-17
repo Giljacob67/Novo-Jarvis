@@ -132,6 +132,8 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("tasks_enabled"):
+            return {"error": "Google Tasks não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Tasks."}
         limit = tool_args.get("limit", 10)
         return await google_tasks_service.list_tasks(db, user_id, limit=limit)
 
@@ -141,6 +143,8 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("tasks_enabled"):
+            return {"error": "Google Tasks não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Tasks."}
         title = tool_args.get("title", "")
         notes = tool_args.get("notes")
         due = tool_args.get("due")
@@ -155,6 +159,8 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
+        if not status.get("tasks_enabled"):
+            return {"error": "Google Tasks não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Tasks."}
         task_id = tool_args.get("task_id", "")
         title = tool_args.get("title")
         notes = tool_args.get("notes")
@@ -170,6 +176,8 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
+        if not status.get("tasks_enabled"):
+            return {"error": "Google Tasks não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Tasks."}
         task_id = tool_args.get("task_id", "")
         result = await google_tasks_service.delete_task(db, user_id, task_id)
         if "error" not in result:
