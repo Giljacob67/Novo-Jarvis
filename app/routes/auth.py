@@ -59,6 +59,12 @@ async def google_auth_callback(
         if "refresh_token" in error_msg.lower():
             return JSONResponse(status_code=400, content={"ok": False, "message": error_msg})
         return JSONResponse(status_code=403, content={"ok": False, "message": error_msg})
+    except Exception:
+        logger.exception("Unexpected error during Google OAuth callback")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "message": "Erro interno ao concluir OAuth Google. Tente /connectgoogle novamente."},
+        )
 
     logger.info("Google OAuth completed for user=%s", credential.user_id)
     return JSONResponse(

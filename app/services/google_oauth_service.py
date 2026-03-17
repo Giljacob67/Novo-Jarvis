@@ -126,7 +126,20 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
         raise ValueError("State inválido ou expirado. Tente conectar novamente via /connectgoogle.")
 
     flow = _make_flow()
-    flow.fetch_token(code=code)
+    try:
+        flow.fetch_token(code=code)
+    except Exception as exc:
+        logger.exception("Google OAuth token exchange failed")
+        msg = str(exc)
+        if "invalid_grant" in msg.lower():
+            raise ValueError(
+                "Código OAuth inválido ou expirado. Use /connectgoogle novamente e conclua a autorização imediatamente."
+            ) from exc
+        if "redirect_uri_mismatch" in msg.lower():
+            raise ValueError(
+                "redirect_uri_mismatch: confira GOOGLE_REDIRECT_URI/APP_BASE_URL e a URI autorizada no Google Cloud."
+            ) from exc
+        raise ValueError(f"Falha ao trocar code por token no Google OAuth: {msg}") from exc
 
     creds = flow.credentials
     if not creds.refresh_token:
@@ -150,7 +163,12 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
         existing.token_type = "Bearer"
         existing.raw_json = encrypt_data(creds.to_json())
         existing.updated_at = datetime.now(timezone.utc)
-        db.commit()
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Failed to persist updated Google credential")
+            raise ValueError(f"Falha ao salvar credenciais Google no banco: {exc}") from exc
         db.refresh(existing)
         return existing
 
@@ -164,7 +182,12 @@ def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
         raw_json=encrypt_data(creds.to_json()),
     )
     db.add(credential)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to persist new Google credential")
+        raise ValueError(f"Falha ao salvar credenciais Google no banco: {exc}") from exc
     db.refresh(credential)
     return credential
 
