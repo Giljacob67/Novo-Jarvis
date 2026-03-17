@@ -1,6 +1,10 @@
 import json
 import logging
 import secrets
+import base64
+import hmac
+import hashlib
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +20,7 @@ from app.utils.encryption import encrypt_data, decrypt_data
 logger = logging.getLogger(__name__)
 
 _pending_states: dict[str, str] = {}
+_STATE_TTL_SECONDS = 15 * 60
 
 GMAIL_SCOPES = {
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -25,6 +30,57 @@ GMAIL_SCOPES = {
 
 def _get_scopes() -> list[str]:
     return settings.all_google_scopes.split()
+
+
+def _state_signing_key() -> bytes:
+    # Google client secret is always present when OAuth is enabled.
+    secret = settings.google_client_secret or settings.telegram_webhook_secret
+    return secret.encode("utf-8")
+
+
+def _urlsafe_b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _urlsafe_b64_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("ascii"))
+
+
+def _create_signed_state(user_id: str) -> str:
+    payload = {
+        "u": user_id,
+        "e": int(time.time()) + _STATE_TTL_SECONDS,
+        "n": secrets.token_urlsafe(8),
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    payload_part = _urlsafe_b64(payload_bytes)
+    signature = hmac.new(_state_signing_key(), payload_part.encode("utf-8"), hashlib.sha256).digest()
+    sig_part = _urlsafe_b64(signature)
+    return f"{payload_part}.{sig_part}"
+
+
+def _verify_signed_state(state: str) -> str | None:
+    try:
+        payload_part, sig_part = state.split(".", 1)
+    except ValueError:
+        return None
+
+    expected = hmac.new(_state_signing_key(), payload_part.encode("utf-8"), hashlib.sha256).digest()
+    provided = _urlsafe_b64_decode(sig_part)
+    if not hmac.compare_digest(expected, provided):
+        return None
+
+    try:
+        payload = json.loads(_urlsafe_b64_decode(payload_part).decode("utf-8"))
+    except Exception:
+        return None
+
+    user_id = str(payload.get("u", "")).strip()
+    expires_at = int(payload.get("e", 0))
+    if not user_id or expires_at < int(time.time()):
+        return None
+    return user_id
 
 
 def _make_flow() -> Flow:
@@ -47,7 +103,9 @@ def _make_flow() -> Flow:
 
 def get_auth_url(user_id: str) -> str:
     flow = _make_flow()
-    state = secrets.token_urlsafe(32)
+    # Signed state makes callback validation work across restarts/instances.
+    state = _create_signed_state(user_id)
+    # Keep legacy map assignment for temporary compatibility (can be removed later).
     _pending_states[state] = user_id
 
     auth_url, _ = flow.authorization_url(
@@ -60,7 +118,10 @@ def get_auth_url(user_id: str) -> str:
 
 
 def exchange_code(db: Session, code: str, state: str) -> GoogleCredential:
-    user_id = _pending_states.pop(state, None)
+    user_id = _verify_signed_state(state)
+    if user_id is None:
+        # Legacy fallback: previous in-memory state format.
+        user_id = _pending_states.pop(state, None)
     if user_id is None:
         raise ValueError("State inválido ou expirado. Tente conectar novamente via /connectgoogle.")
 
@@ -188,7 +249,8 @@ async def revoke_and_disconnect(db: Session, user_id: str) -> dict[str, Any]:
         return {"disconnected": False, "message": "Nenhuma conta Google conectada."}
 
     revoked = False
-    token_to_revoke = cred.refresh_token or cred.access_token
+    encrypted_token = cred.refresh_token or cred.access_token
+    token_to_revoke = decrypt_data(encrypted_token) if encrypted_token else ""
     if token_to_revoke:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
