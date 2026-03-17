@@ -1,7 +1,7 @@
 import os
 import logging
 from urllib.parse import urlparse
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 
 from pydantic_settings import BaseSettings
 
@@ -120,7 +120,15 @@ class Settings(BaseSettings):
     def effective_base_url(self) -> str:
         return _resolve_base_url(self.app_base_url)
 
-    openai_api_key: str = ""
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPENAI_API_KEY",
+            "OPENAIAPIKEY",
+            "OPENAI_APIKEY",
+            "OPENAI_KEY",
+        ),
+    )
     openai_model: str = "gpt-5-mini"
     openai_max_tool_rounds: int = 3
     context_max_messages: int = 20
