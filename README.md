@@ -35,7 +35,7 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 | `/remember <texto>` | Salva uma anotação/lembrete |
 | `/memories` | Lista anotações recentes |
 | `/connectgoogle` | Envia link para conectar conta Google |
-| `/google` | Mostra status da conexão Google (Calendar, Tasks, Gmail) |
+| `/google` | Mostra status da conexão Google (Calendar, Tasks, Gmail, Drive) |
 | `/tasks` | Lista tarefas pendentes do Google Tasks |
 | `/newtask <titulo>` | Cria nova tarefa no Google Tasks |
 | `/newevent <titulo> \| <início> \| <fim>` | Cria evento no Google Calendar |
@@ -47,6 +47,8 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 | `/replydraft <message_id> \| <corpo>` | Cria rascunho de resposta a um e-mail |
 | `/senddraft <draft_id>` | Envia rascunho de e-mail |
 | `/inboxsummary` | Resumo da inbox (e-mails não lidos importantes) |
+| `/drive` | Lista arquivos recentes do Google Drive |
+| `/drivesearch <consulta>` | Busca arquivos por nome no Google Drive |
 | `/voiceon` | Ativa respostas por áudio |
 | `/voiceoff` | Desativa respostas por áudio |
 | `/voicestatus` | Status das respostas por áudio |
@@ -60,7 +62,7 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 
 1. Acesse [Google Cloud Console](https://console.cloud.google.com/)
 2. Crie ou selecione um projeto
-3. Ative as APIs: **Google Calendar API**, **Google Tasks API** e **Gmail API**
+3. Ative as APIs: **Google Calendar API**, **Google Tasks API**, **Gmail API** e **Google Drive API**
 4. Vá em **APIs & Services > Credentials**
 5. Clique em **Create Credentials > OAuth 2.0 Client ID**
 6. Tipo: **Web application**
@@ -83,6 +85,7 @@ Se houver qualquer diferença (mesmo um `/` no final), o Google retornará erro 
 - `https://www.googleapis.com/auth/tasks` — Ler e criar tarefas
 - `https://www.googleapis.com/auth/gmail.readonly` — Ler e-mails e metadados
 - `https://www.googleapis.com/auth/gmail.compose` — Criar rascunhos e enviar e-mails
+- `https://www.googleapis.com/auth/drive.metadata.readonly` — Listar e buscar arquivos no Drive (metadados)
 
 ### ⚠️ Sobre escopos do Gmail
 
@@ -135,6 +138,8 @@ Cadastre os seguintes Secrets no painel do Replit (Tools > Secrets):
 | `GOOGLE_OAUTH_SCOPES` | Opcional | Escopos Calendar/Tasks (padrão: `calendar.events tasks`) |
 | `GOOGLE_GMAIL_ENABLED` | Opcional | `true` (padrão) ou `false` para desabilitar Gmail |
 | `GOOGLE_GMAIL_SCOPES` | Opcional | Escopos Gmail (padrão: `gmail.readonly gmail.compose`) |
+| `GOOGLE_DRIVE_ENABLED` | Opcional | `true` (padrão) ou `false` para desabilitar integração com Drive |
+| `GOOGLE_DRIVE_SCOPES` | Opcional | Escopo Drive (padrão: `drive.metadata.readonly`) |
 | `GMAIL_INBOX_QUERY_DEFAULT` | Opcional | Query padrão para /inbox (padrão: `in:inbox newer_than:7d`) |
 | `GMAIL_MAX_LIST_RESULTS` | Opcional | Máximo de e-mails listados (padrão: `10`) |
 | `OPENAI_TRANSCRIBE_MODEL` | Opcional | Modelo de transcrição (padrão: `gpt-4o-mini-transcribe`) |
@@ -194,9 +199,9 @@ python scripts/get_telegram_webhook_info.py
 1. Configure os Secrets `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e `GOOGLE_REDIRECT_URI`
 2. No Telegram, envie `/connectgoogle` ao bot
 3. Clique no link recebido
-4. Autorize as permissões no Google (Calendar, Tasks e Gmail)
+4. Autorize as permissões no Google (Calendar, Tasks, Gmail e Drive)
 5. Após redirecionamento, o Telegram confirmará a conexão
-6. Envie `/google` para verificar o status (Calendar ✅, Tasks ✅, Gmail ✅)
+6. Envie `/google` para verificar o status (Calendar ✅, Tasks ✅, Gmail ✅, Drive ✅)
 7. Envie `/myday` para ver dados reais da agenda e e-mails
 
 ### Testando comandos Google
@@ -220,6 +225,11 @@ python scripts/get_telegram_webhook_info.py
 8. `/drafts` — listar rascunhos existentes
 9. `/senddraft <draft_id>` — enviar rascunho
 10. `/inboxsummary` — resumo rápido da inbox
+
+### Testando comandos Drive
+
+1. `/drive` — lista arquivos recentes do Drive
+2. `/drivesearch contrato` — busca arquivos por nome
 
 ### Voz no Telegram
 

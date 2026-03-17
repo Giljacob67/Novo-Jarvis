@@ -186,6 +186,45 @@ TOOLS = [
     },
     {
         "type": "function",
+        "name": "get_drive_connection_status",
+        "description": "Verifica se o Google Drive do usuário está conectado e autorizado",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "type": "function",
+        "name": "list_drive_files",
+        "description": "Lista arquivos recentes do Google Drive",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Número máximo de arquivos",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "search_drive_files",
+        "description": "Busca arquivos no Google Drive por nome",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Texto a buscar no nome do arquivo"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Número máximo de resultados",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "type": "function",
         "name": "get_inbox_summary",
         "description": "Retorna um resumo dos e-mails não lidos mais importantes da inbox",
         "parameters": {

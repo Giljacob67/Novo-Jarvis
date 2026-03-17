@@ -28,6 +28,7 @@ from app.services import google_oauth_service
 from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
+from app.services import google_drive_service
 from app.services import audio_service
 from app.services import approval_service
 from app.services import proactive_service
@@ -62,6 +63,8 @@ HELP_TEXT = (
     "/replydraft <message_id> | <corpo> — responder e-mail (rascunho)\n"
     "/senddraft <draft_id> — enviar rascunho\n"
     "/inboxsummary — resumo da inbox\n"
+    "/drive — listar arquivos recentes do Drive\n"
+    "/drivesearch <consulta> — buscar arquivos no Drive\n"
     "/approvals — ver aprovações pendentes\n"
     "/approve <id> — aprovar uma ação\n"
     "/reject <id> — rejeitar uma ação\n"
@@ -116,6 +119,18 @@ def _tasks_not_ready_msg(db: Session, user_id: str) -> str | None:
         return (
             "⚠️ Sua conta Google está conectada, mas sem permissão do Google Tasks. "
             "Use /connectgoogle para reconectar e autorizar Tasks."
+        )
+    return None
+
+
+def _drive_not_ready_msg(db: Session, user_id: str) -> str | None:
+    status = google_oauth_service.get_status(db, user_id)
+    if not status.get("connected"):
+        return "❌ Google não conectado. Use /connectgoogle para conectar sua conta primeiro."
+    if not status.get("drive_enabled"):
+        return (
+            "⚠️ Sua conta Google está conectada, mas sem permissão do Google Drive. "
+            "Use /connectgoogle para reconectar e autorizar Drive."
         )
     return None
 
@@ -596,6 +611,10 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
 
     if text.startswith("/inboxsummary"):
         return await _cmd_inboxsummary(db, user_id)
+    if text.startswith("/drivesearch"):
+        return await _cmd_drivesearch(db, user_id, text)
+    if text.startswith("/drive"):
+        return await _cmd_drive(db, user_id)
     if text.startswith("/inbox"):
         return await _cmd_inbox(db, user_id)
     if text.startswith("/emailsearch"):
@@ -740,12 +759,12 @@ def _cmd_connectgoogle(db: Session, user_id: str) -> str:
         return "⚠️ Credenciais Google OAuth não configuradas. Peça ao administrador."
     auth_link = f"{base}/auth/google/start"
     status = google_oauth_service.get_status(db, user_id)
-    if status.get("connected") and not status.get("gmail_enabled"):
+    if status.get("connected") and (not status.get("gmail_enabled") or not status.get("drive_enabled")):
         return (
-            "⚠️ Sua conta Google está conectada, mas sem permissões de Gmail.\n"
-            "Ao clicar no link abaixo, você será redirecionado para autorizar os escopos adicionais de Gmail.\n"
+            "⚠️ Sua conta Google está conectada, mas faltam permissões adicionais (Gmail e/ou Drive).\n"
+            "Ao clicar no link abaixo, você será redirecionado para autorizar os escopos adicionais.\n"
             "Seus acessos anteriores (Calendar, Tasks) serão mantidos.\n\n"
-            f"🔗 [Reconectar com Gmail]({auth_link})"
+            f"🔗 [Reconectar Google]({auth_link})"
         )
     return f"🔗 [Clique aqui para conectar sua conta Google]({auth_link})"
 
@@ -756,13 +775,16 @@ def _cmd_google_status(db: Session, user_id: str) -> str:
         gmail_str = "✅" if status.get("gmail_enabled") else "❌"
         cal_str = "✅" if status.get("calendar_enabled") else "❌"
         tasks_str = "✅" if status.get("tasks_enabled") else "❌"
+        drive_str = "✅" if status.get("drive_enabled") else "❌"
         reply = (
             "✅ Conta Google conectada!\n"
-            f"Calendar: {cal_str} | Tasks: {tasks_str} | Gmail: {gmail_str}\n"
+            f"Calendar: {cal_str} | Tasks: {tasks_str} | Gmail: {gmail_str} | Drive: {drive_str}\n"
             f"Validade do token: {status.get('token_expiry', 'N/A')}"
         )
         if not status.get("gmail_enabled"):
             reply += "\n\n⚠️ Gmail não autorizado. Use /connectgoogle para reconectar com escopos de Gmail."
+        if not status.get("drive_enabled"):
+            reply += "\n⚠️ Drive não autorizado. Use /connectgoogle para reconectar com escopo de Drive."
         return reply
     return "❌ Conta Google não conectada. Use /connectgoogle para conectar."
 
@@ -857,6 +879,66 @@ async def _cmd_inboxsummary(db: Session, user_id: str) -> str:
     if "error" in result:
         return f"❌ {result['error']}"
     return result.get("summary", "Não foi possível gerar o resumo.")
+
+
+async def _cmd_drive(db: Session, user_id: str) -> str:
+    drive_not_ready = _drive_not_ready_msg(db, user_id)
+    if drive_not_ready:
+        return drive_not_ready
+
+    result = await google_drive_service.list_files(db, user_id, limit=10)
+    if "error" in result:
+        return f"❌ {result['error']}"
+
+    files = result.get("files", [])
+    if not files:
+        return "📁 Não encontrei arquivos recentes no seu Drive."
+
+    lines = ["📁 Arquivos recentes no Drive:"]
+    for i, item in enumerate(files[:10], 1):
+        name = item.get("name", "(sem nome)")
+        mime = item.get("mimeType", "")
+        modified = (item.get("modifiedTime", "") or "")[:10]
+        link = item.get("webViewLink", "")
+        suffix = f" — {modified}" if modified else ""
+        lines.append(f"{i}. {name}{suffix}")
+        if mime:
+            lines.append(f"   tipo: {mime}")
+        if link:
+            lines.append(f"   🔗 {link}")
+    return "\n".join(lines)
+
+
+async def _cmd_drivesearch(db: Session, user_id: str, text: str) -> str:
+    query = text[len("/drivesearch"):].strip()
+    if not query:
+        return "Use: /drivesearch <termo de busca>"
+
+    drive_not_ready = _drive_not_ready_msg(db, user_id)
+    if drive_not_ready:
+        return drive_not_ready
+
+    result = await google_drive_service.search_files(db, user_id, query=query, limit=10)
+    if "error" in result:
+        return f"❌ {result['error']}"
+
+    files = result.get("files", [])
+    if not files:
+        return f"🔎 Nenhum arquivo encontrado para: \"{query}\""
+
+    lines = [f"🔎 Resultados no Drive para \"{query}\":"]
+    for i, item in enumerate(files[:10], 1):
+        name = item.get("name", "(sem nome)")
+        mime = item.get("mimeType", "")
+        modified = (item.get("modifiedTime", "") or "")[:10]
+        link = item.get("webViewLink", "")
+        suffix = f" — {modified}" if modified else ""
+        lines.append(f"{i}. {name}{suffix}")
+        if mime:
+            lines.append(f"   tipo: {mime}")
+        if link:
+            lines.append(f"   🔗 {link}")
+    return "\n".join(lines)
 
 
 async def _cmd_inbox(db: Session, user_id: str) -> str:

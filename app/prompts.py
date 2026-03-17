@@ -39,6 +39,9 @@ Ferramentas disponíveis:
 - create_event(title, start_time, end_time, timezone, description, location): cria evento
 - get_google_connection_status(): status Google
 - get_gmail_connection_status(): status Gmail
+- get_drive_connection_status(): status Drive
+- list_drive_files(limit): lista arquivos recentes do Drive
+- search_drive_files(query, limit): busca arquivos no Drive
 - get_inbox_summary(max_results): resumo de inbox
 - search_emails(query, max_results): busca e-mails
 - get_email_thread(thread_id): lê thread

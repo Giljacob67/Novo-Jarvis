@@ -26,6 +26,9 @@ GMAIL_SCOPES = {
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
 }
+DRIVE_SCOPES = {
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+}
 
 
 def _get_scopes() -> list[str]:
@@ -257,6 +260,7 @@ def get_status(db: Session, user_id: str) -> dict[str, Any]:
             "gmail_enabled": False,
             "calendar_enabled": False,
             "tasks_enabled": False,
+            "drive_enabled": False,
         }
 
     granted = set(cred.scope.split()) if cred.scope else set()
@@ -268,6 +272,7 @@ def get_status(db: Session, user_id: str) -> dict[str, Any]:
         "gmail_enabled": GMAIL_SCOPES.issubset(granted),
         "calendar_enabled": "https://www.googleapis.com/auth/calendar.events" in granted,
         "tasks_enabled": "https://www.googleapis.com/auth/tasks" in granted,
+        "drive_enabled": DRIVE_SCOPES.issubset(granted),
     }
 
 

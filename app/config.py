@@ -193,6 +193,8 @@ class Settings(BaseSettings):
 
     google_gmail_enabled: bool = True
     google_gmail_scopes: str = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"
+    google_drive_enabled: bool = True
+    google_drive_scopes: str = "https://www.googleapis.com/auth/drive.metadata.readonly"
     gmail_inbox_query_default: str = "in:inbox newer_than:7d"
     gmail_max_list_results: int = 10
 
@@ -201,6 +203,8 @@ class Settings(BaseSettings):
         scopes = self.google_oauth_scopes
         if self.google_gmail_enabled:
             scopes = f"{scopes} {self.google_gmail_scopes}"
+        if self.google_drive_enabled:
+            scopes = f"{scopes} {self.google_drive_scopes}"
         return scopes
 
     @property

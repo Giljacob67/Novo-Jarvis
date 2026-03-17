@@ -16,6 +16,7 @@ from app.services import google_oauth_service
 from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
+from app.services import google_drive_service
 from app.schemas.day import DayOverview, CalendarEvent, Task, Email
 from app.utils.date_utils import parse_datetime_local
 
@@ -262,6 +263,36 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
         if not db:
             return {"connected": False, "gmail_enabled": False}
         return google_oauth_service.get_status(db, user_id)
+
+    if tool_name == "get_drive_connection_status":
+        if not db:
+            return {"connected": False, "drive_enabled": False}
+        return google_oauth_service.get_status(db, user_id)
+
+    if tool_name == "list_drive_files":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("drive_enabled"):
+            return {"error": "Google Drive não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Drive."}
+        limit = tool_args.get("limit", 10)
+        return await google_drive_service.list_files(db, user_id, limit=limit)
+
+    if tool_name == "search_drive_files":
+        if not db:
+            return {"error": "Banco não disponível"}
+        status = google_oauth_service.get_status(db, user_id)
+        if not status.get("connected"):
+            return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
+        if not status.get("drive_enabled"):
+            return {"error": "Google Drive não autorizado. Use /connectgoogle para reconectar e liberar o escopo de Drive."}
+        query = str(tool_args.get("query", "")).strip()
+        if not query:
+            return {"error": "Informe uma consulta para buscar arquivos no Drive."}
+        limit = tool_args.get("limit", 10)
+        return await google_drive_service.search_files(db, user_id, query=query, limit=limit)
 
     if tool_name == "get_inbox_summary":
         if not db:
