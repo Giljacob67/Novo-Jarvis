@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Header
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
