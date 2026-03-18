@@ -236,6 +236,13 @@ class Settings(BaseSettings):
     browser_require_approval_for_submit: bool = True
     browser_allow_file_downloads: bool = True
 
+    # Semantic memory (pgvector) — disabled by default for SQLite dev compatibility
+    # Enable on Railway: SEMANTIC_MEMORY_ENABLED=true
+    semantic_memory_enabled: bool = False
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+    memory_extraction_enabled: bool = True
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

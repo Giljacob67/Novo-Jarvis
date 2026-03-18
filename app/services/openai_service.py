@@ -612,10 +612,29 @@ def _runtime_capabilities_context() -> str:
     )
 
 
+EXTRACTION_SYSTEM_PROMPT = """\
+Você é um extrator de memórias pessoais. Dado um turno de conversa, extraia APENAS \
+fatos relevantes e duráveis sobre o usuário.
+
+Extraia fatos de: compromissos/datas, preferências expressas, projetos mencionados, \
+contatos/pessoas citadas, decisões tomadas, informações pessoais relevantes.
+
+NÃO extraia: saudações, perguntas genéricas, respostas factuais sem contexto pessoal, \
+fatos triviais ou de vida curta.
+
+Responda SEMPRE em JSON com formato:
+{"facts": [{"content": "fato em português, 1-2 frases", "category": "categoria"}]}
+
+Categorias válidas: compromisso, preferência, projeto, contato, decisão, informação_pessoal
+Se não há fatos relevantes: {"facts": []}
+"""
+
+
 class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
         self._client_provider: str = ""
+        self._async_client: Any = None  # AsyncOpenAI for embeddings and extraction
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
@@ -653,6 +672,78 @@ class OpenAIService:
                 self._client = OpenAI(api_key=api_key)
             self._client_provider = provider
         return self._client
+
+    def _get_async_client(self) -> Any:
+        """Returns an AsyncOpenAI client for embeddings and extraction calls."""
+        if not settings.openai_api_key:
+            return None
+        if self._async_client is None:
+            from openai import AsyncOpenAI
+            self._async_client = AsyncOpenAI(api_key=settings.openai_api_key)
+        return self._async_client
+
+    async def embed_text(self, text: str) -> list[float] | None:
+        """Generate a semantic embedding vector for the given text.
+
+        Returns None if semantic memory is disabled, the client is unavailable,
+        or the API call fails — callers should treat None as a graceful no-op.
+        """
+        if not settings.semantic_memory_enabled:
+            return None
+        client = self._get_async_client()
+        if client is None:
+            return None
+        try:
+            response = await client.embeddings.create(
+                model=settings.embedding_model,
+                input=text[:8000],  # stay within token limits
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.warning("embed_text failed: %s", e)
+            return None
+
+    async def extract_facts_from_turn(
+        self,
+        user_message: str,
+        assistant_reply: str,
+    ) -> list[dict]:
+        """Extract structured facts from a conversation turn using gpt-4o-mini.
+
+        Returns a list of {"content": str, "category": str} dicts, or [] on
+        failure / when no relevant facts are found.
+        """
+        if not settings.memory_extraction_enabled:
+            return []
+        client = self._get_async_client()
+        if client is None:
+            return []
+        prompt = (
+            f"Usuário disse: {user_message[:500]}\n\n"
+            f"Assistente respondeu: {assistant_reply[:500]}"
+        )
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=300,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content or "{}"
+            data = json.loads(raw)
+            facts = data.get("facts", [])
+            # Validate structure — ignore malformed entries
+            return [
+                f for f in facts
+                if isinstance(f, dict) and f.get("content") and f.get("category")
+            ]
+        except Exception as e:
+            logger.warning("extract_facts_from_turn failed: %s", e)
+            return []
 
     async def generate_reply(
         self,

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -13,7 +14,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.action_log import ActionLog
 from app.prompts import format_history_context
-from app.services.memory_service import save_memory, list_memories
+from app.services.memory_service import save_memory, list_memories, recall_memories
 from app.services.openai_service import OpenAIService
 from app.services import google_oauth_service
 from app.services import google_calendar as google_calendar_service
@@ -969,7 +970,12 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
                 _save_message(db, conv.id, role="assistant", text=fallback_reply)
                 return fallback_reply
 
-    memories = list_memories(db, user_id, limit=settings.context_max_memories)
+    query_embedding = await _openai_service.embed_text(augmented_text)
+    memories = recall_memories(
+        db, user_id,
+        query_embedding=query_embedding,
+        limit=settings.context_max_memories,
+    )
     if state:
         memories = [
             SimpleNamespace(
@@ -1015,7 +1021,55 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
 
     _save_message(db, conv.id, role="assistant", text=reply)
 
+    # Fire-and-forget: extract and persist facts from this conversation turn.
+    # Runs in background so it never delays the response to the user.
+    if settings.memory_extraction_enabled:
+        asyncio.create_task(
+            _extract_and_save_memories(user_id=user_id, user_message=text, assistant_reply=reply)
+        )
+
     return reply
+
+
+async def _extract_and_save_memories(
+    user_id: str,
+    user_message: str,
+    assistant_reply: str,
+) -> None:
+    """Background task: extract structured facts from a conversation turn and persist them.
+
+    Opens its own database session to avoid conflicts with the closed request session.
+    All exceptions are caught and logged — this must never affect the user response.
+    """
+    try:
+        facts = await _openai_service.extract_facts_from_turn(user_message, assistant_reply)
+        if not facts:
+            return
+
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            for fact in facts:
+                content = (fact.get("content") or "").strip()
+                category = (fact.get("category") or "general").strip()
+                if not content:
+                    continue
+                embedding = await _openai_service.embed_text(content)
+                save_memory(
+                    db=db,
+                    user_id=user_id,
+                    content=content,
+                    category=category,
+                    source="auto_extraction",
+                    embedding=embedding,
+                )
+            logger.debug(
+                "Auto-extracted %d memory fact(s) for user=%s", len(facts), user_id
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("_extract_and_save_memories failed silently for user=%s", user_id)
 
 
 def format_day_overview_text(overview: DayOverview) -> str:

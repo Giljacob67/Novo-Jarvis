@@ -1,7 +1,11 @@
-from sqlalchemy import create_engine
+import logging
+
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Configuração do engine com pooling otimizado para produção
@@ -43,3 +47,35 @@ def get_db():
 def init_db() -> None:
     import app.models  # noqa: F401 — ensure all models are registered
     Base.metadata.create_all(bind=engine)
+    _setup_pgvector()
+
+
+def _setup_pgvector() -> None:
+    """Enable pgvector extension and add embedding column if needed.
+
+    Idempotent — safe to call on every startup. No-op when
+    semantic_memory_enabled=False (SQLite dev environment).
+    """
+    if not settings.semantic_memory_enabled:
+        return
+    if not settings.jarvis_database_url.startswith("postgresql"):
+        logger.warning("semantic_memory_enabled=True but not using PostgreSQL — skipping pgvector setup")
+        return
+
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            logger.info("pgvector extension enabled")
+        except Exception as e:
+            logger.error("Failed to enable pgvector extension: %s", e)
+            raise
+
+        try:
+            conn.execute(text(
+                f"ALTER TABLE memory_items "
+                f"ADD COLUMN IF NOT EXISTS embedding vector({settings.embedding_dimensions})"
+            ))
+            logger.info("embedding column ensured on memory_items (dimensions=%d)", settings.embedding_dimensions)
+        except Exception as e:
+            logger.error("Failed to add embedding column: %s", e)
+            raise
