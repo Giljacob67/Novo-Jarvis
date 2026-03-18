@@ -934,6 +934,27 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
         raw_json=json.dumps(raw_update, ensure_ascii=False) if raw_update else None,
     )
 
+    # Natural language reminder detection (before general LLM call)
+    try:
+        from app.services.reminder_service import (
+            parse_reminder_intent, create_reminder, format_trigger_relative,
+        )
+        reminder_data = await parse_reminder_intent(text)
+        if reminder_data:
+            trigger_dt = reminder_data["trigger_at"]
+            message = reminder_data["message"] or text[:100]
+            create_reminder(db, user_id, message, trigger_dt.replace(tzinfo=None), raw_input=text)
+            relative = format_trigger_relative(trigger_dt.replace(tzinfo=None))
+            reminder_reply = (
+                f"✅ Lembrete criado!\n"
+                f"📌 {message}\n"
+                f"⏰ Dispara {relative} ({trigger_dt.strftime('%d/%m %H:%M')})"
+            )
+            _save_message(db, conv.id, role="assistant", text=reminder_reply, channel=channel)
+            return reminder_reply
+    except Exception:
+        logger.exception("Reminder intent detection failed — continuing to LLM")
+
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
 

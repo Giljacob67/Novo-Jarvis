@@ -15,6 +15,7 @@ from app.models.browser_session import BrowserSession
 from app.models.browser_step_log import BrowserStepLog
 from app.models.browser_artifact import BrowserArtifact
 from app.models.conversation_state import ConversationState
+from app.models.reminder import Reminder
 
 __all__ = [
     "User",
@@ -34,4 +35,5 @@ __all__ = [
     "BrowserStepLog",
     "BrowserArtifact",
     "ConversationState",
+    "Reminder",
 ]

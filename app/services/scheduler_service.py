@@ -45,6 +45,33 @@ def _time_matches(current: time, target_str: str, tolerance_minutes: int = 2) ->
     return abs(current_minutes - target_minutes) <= tolerance_minutes
 
 
+async def _fire_due_reminders() -> None:
+    """Check for due user reminders and send them via Telegram."""
+    from app.services.reminder_service import get_due_reminders, mark_sent
+    from app.services.proactive_service import send_proactive_message
+    db = SessionLocal()
+    try:
+        due = get_due_reminders(db)
+        for reminder in due:
+            user_id = reminder.user_id
+            msg = f"⏰ *Lembrete:* {reminder.message}"
+            sent = await send_proactive_message(
+                db,
+                user_id,
+                msg,
+                subject=f"reminder_{reminder.id}",
+                proactive_category="reminder",
+                trigger_type="reminder",
+            )
+            if sent:
+                mark_sent(db, reminder.id)
+                logger.info("Reminder id=%d fired for user=%s", reminder.id, user_id)
+    except Exception:
+        logger.exception("_fire_due_reminders failed")
+    finally:
+        db.close()
+
+
 async def _run_scheduler_loop() -> None:
     global _running
     _running = True
@@ -53,6 +80,7 @@ async def _run_scheduler_loop() -> None:
     while _running:
         try:
             await _check_routines()
+            await _fire_due_reminders()
         except Exception:
             logger.exception("Scheduler loop error")
 
@@ -242,23 +270,40 @@ async def _cleanup_browser_sessions() -> None:
         db.close()
 
 
+_reminder_task: asyncio.Task | None = None
+
+
+async def _run_reminder_loop() -> None:
+    """High-frequency loop (60s) exclusively for firing due user reminders."""
+    global _running
+    while _running:
+        try:
+            await _fire_due_reminders()
+        except Exception:
+            logger.exception("Reminder loop error")
+        await asyncio.sleep(60)
+
+
 async def start_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _reminder_task
     if not settings.proactive_features_enabled:
         logger.info("Proactive features disabled, scheduler not started")
         return
     _scheduler_task = asyncio.create_task(_run_scheduler_loop())
-    logger.info("Scheduler task created")
+    _reminder_task = asyncio.create_task(_run_reminder_loop())
+    logger.info("Scheduler + reminder tasks created")
 
 
 async def stop_scheduler() -> None:
-    global _running, _scheduler_task
+    global _running, _scheduler_task, _reminder_task
     _running = False
-    if _scheduler_task and not _scheduler_task.done():
-        _scheduler_task.cancel()
-        try:
-            await _scheduler_task
-        except asyncio.CancelledError:
-            pass
+    for task in (_scheduler_task, _reminder_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     _scheduler_task = None
+    _reminder_task = None
     logger.info("Scheduler stopped")

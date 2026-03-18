@@ -56,6 +56,8 @@ HELP_TEXT = (
     "/review — fechamento do dia\n"
     "/remember <texto> — salvar uma anotação\n"
     "/memories — listar anotações recentes\n"
+    "/remindme <quando> <mensagem> — criar lembrete (ex: /remindme daqui 2h ligar João)\n"
+    "/lembretes — ver lembretes pendentes\n"
     "/connectgoogle — conectar conta Google\n"
     "/google — status da conexão Google\n"
     "/tasks — listar tarefas\n"
@@ -869,6 +871,12 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
     if text.startswith("/browserartifacts"):
         return await _cmd_browserartifacts(db, user_id, text)
 
+    if text.startswith("/remindme") or text.startswith("/lembra"):
+        return await _cmd_remindme(db, user_id, text)
+
+    if text.startswith("/lembretes") or text.startswith("/reminders"):
+        return await _cmd_list_reminders(db, user_id)
+
     return await handle_free_text(db, user_id, text, raw_update=body)
 
 
@@ -905,6 +913,57 @@ async def _cmd_headlines(db: Session, user_id: str, text: str) -> str:
 
 async def _cmd_review(db: Session, user_id: str) -> str:
     return await proactive_service.generate_evening_review(db, user_id)
+
+
+async def _cmd_remindme(db: Session, user_id: str, text: str) -> str:
+    """Parse '/remindme <time expression> <message>' and create a reminder."""
+    from app.services.reminder_service import (
+        parse_reminder_intent, create_reminder, format_trigger_relative,
+    )
+    # Strip the command prefix
+    body = re.sub(r"^/(?:remindme|lembra)\s*", "", text, flags=re.IGNORECASE).strip()
+    if not body:
+        return (
+            "⏰ *Como usar:*\n"
+            "`/remindme daqui 2h ligar pro João`\n"
+            "`/remindme amanhã às 10h enviar proposta`\n"
+            "`/remindme na sexta às 14h reunião com cliente`"
+        )
+
+    # Inject a trigger verb so the parser detects intent
+    synthetic = f"me lembra {body}"
+    result = await parse_reminder_intent(synthetic)
+
+    if not result:
+        return (
+            "❌ Não consegui entender o horário. Tente:\n"
+            "`/remindme daqui 30min revisar PR`\n"
+            "`/remindme amanhã às 9h standup`"
+        )
+
+    trigger_dt = result["trigger_at"]
+    message = result["message"] or body
+    reminder = create_reminder(db, user_id, message, trigger_dt.replace(tzinfo=None), raw_input=text)
+    relative = format_trigger_relative(trigger_dt.replace(tzinfo=None))
+    return (
+        f"✅ *Lembrete criado!*\n"
+        f"📌 {message}\n"
+        f"⏰ Dispara {relative} ({trigger_dt.strftime('%d/%m %H:%M')})"
+    )
+
+
+async def _cmd_list_reminders(db: Session, user_id: str) -> str:
+    """List pending reminders for the user."""
+    from app.services.reminder_service import list_pending_reminders, format_trigger_relative
+    items = list_pending_reminders(db, user_id)
+    if not items:
+        return "📭 Nenhum lembrete pendente."
+    lines = ["⏰ *Lembretes pendentes:*", ""]
+    for r in items:
+        relative = format_trigger_relative(r.trigger_at)
+        lines.append(f"• {r.message}")
+        lines.append(f"  _{relative} — {r.trigger_at.strftime('%d/%m %H:%M')}_")
+    return "\n".join(lines)
 
 
 def _cmd_autonomy(db: Session, user_id: str, text: str) -> str:
