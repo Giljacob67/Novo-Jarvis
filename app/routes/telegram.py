@@ -459,6 +459,81 @@ async def _send_voice_reply(db: Session, chat_id: int, text: str, user_id: str) 
             return False
 
 
+async def _handle_streaming_reply(
+    db: Session,
+    user_id: str,
+    chat_id: int,
+    text: str,
+    body: dict,
+) -> str:
+    """Stream an LLM reply progressively editing a Telegram placeholder message.
+
+    Flow:
+    1. Send typing indicator
+    2. Post a placeholder ⌛ message to get message_id
+    3. Stream the LLM response, editing the placeholder every N tokens
+    4. Final edit with complete reply
+    5. Return full text for caller to save / post-process
+    Falls back to non-streaming if telegram or LLM client unavailable.
+    """
+    from app.services.openai_service import OpenAIService
+    from app.services.memory_service import list_memories
+    from app.services import conversation_state_service
+    from app.prompts import format_history_context
+    from app.services.assistant_service import (
+        _get_or_create_conversation,
+        _get_recent_messages,
+        _save_message,
+    )
+
+    try:
+        await telegram_service.send_chat_action(chat_id, "typing")
+
+        # Send placeholder
+        placeholder_result = await telegram_service.send_message(chat_id, "⌛")
+        placeholder_id: int | None = None
+        if placeholder_result.get("ok"):
+            placeholder_id = placeholder_result.get("result", {}).get("message_id")
+
+        # Prepare context (mirrors handle_free_text logic for context gathering)
+        conv = _get_or_create_conversation(db, user_id)
+        _save_message(db, conv.id, role="user", text=text, channel="telegram",
+                      raw_json=json.dumps(body, ensure_ascii=False))
+        recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
+        history = format_history_context(recent[:-1])
+        memories = list_memories(db, user_id, limit=settings.context_max_memories)
+
+        last_edit_text = ""
+
+        async def _on_chunk(partial: str) -> None:
+            nonlocal last_edit_text
+            if placeholder_id and partial != last_edit_text:
+                last_edit_text = partial
+                display = partial + " ▌"  # typing cursor
+                await telegram_service.edit_message(chat_id, placeholder_id, display)
+
+        svc = OpenAIService()
+        reply = await svc.generate_reply_streaming(
+            user_id=user_id,
+            user_text=text,
+            recent_messages=history,
+            memories=memories,
+            chunk_callback=_on_chunk,
+            chunk_interval=settings.streaming_chunk_interval,
+        )
+
+        # Final edit — remove cursor, show complete reply
+        if placeholder_id:
+            await telegram_service.edit_message(chat_id, placeholder_id, reply)
+
+        _save_message(db, conv.id, role="assistant", text=reply, channel="telegram")
+        return reply
+
+    except Exception:
+        logger.exception("Streaming reply failed for user=%s, falling back", user_id)
+        return await handle_free_text(db, user_id, text, raw_update=body)
+
+
 def _ext_from_mime(mime_type: str) -> str:
     mime_map = {
         "audio/ogg": ".ogg",
@@ -676,10 +751,20 @@ async def telegram_webhook(
             _mark_update_processed(db, update.update_id, user_id)
             return TelegramWebhookResponse(ok=True, message="ignored")
 
-        reply_text = await _route_command(db, user_id, chat_id, text, body)
-
-        if reply_text:
-            await telegram_service.send_message(chat_id, reply_text)
+        # For slash commands: use the standard synchronous route
+        # For free-text: use progressive streaming if enabled
+        is_command = text.startswith("/")
+        if is_command:
+            reply_text = await _route_command(db, user_id, chat_id, text, body)
+            if reply_text:
+                await telegram_service.send_message(chat_id, reply_text)
+        elif settings.telegram_streaming_enabled:
+            # Streaming path: sends + edits message internally, no send needed here
+            await _handle_streaming_reply(db, user_id, chat_id, text, body)
+        else:
+            reply_text = await handle_free_text(db, user_id, text, raw_update=body)
+            if reply_text:
+                await telegram_service.send_message(chat_id, reply_text)
 
         persisted = _mark_update_processed(db, update.update_id, user_id)
         return TelegramWebhookResponse(ok=True, message="processed" if persisted else "duplicate")

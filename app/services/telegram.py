@@ -45,6 +45,34 @@ class TelegramService:
         resp.raise_for_status()
         return resp.json()
 
+    async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
+        """Send a chat action (e.g. 'typing') — shows activity indicator in Telegram."""
+        try:
+            url = f"{self._base}/sendChatAction"
+            await self.client.post(url, json={"chat_id": chat_id, "action": action})
+        except Exception:
+            pass  # Non-critical — silently ignore failures
+
+    async def edit_message(self, chat_id: int, message_id: int, text: str) -> bool:
+        """Edit an existing message. Returns True on success."""
+        url = f"{self._base}/editMessageText"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+        try:
+            resp = await self.client.post(url, json=payload)
+            if resp.status_code == 400:
+                # Fallback to plain text if Markdown parse fails
+                plain = {k: v for k, v in payload.items() if k != "parse_mode"}
+                resp = await self.client.post(url, json=plain)
+            return resp.is_success
+        except Exception:
+            logger.warning("edit_message failed for chat_id=%s msg=%s", chat_id, message_id)
+            return False
+
     async def set_webhook(self, url: str, secret_token: str = "") -> dict[str, Any]:
         api_url = f"{self._base}/setWebhook"
         payload: dict[str, Any] = {"url": url}

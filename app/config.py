@@ -199,6 +199,9 @@ class Settings(BaseSettings):
     proactive_event_triggers_enabled: bool = True
     proactive_pending_approval_alert_hours: int = 6
 
+    telegram_streaming_enabled: bool = True    # stream replies word-by-word in Telegram
+    streaming_chunk_interval: int = 15         # tokens between progressive edits
+
     google_gmail_enabled: bool = True
     google_gmail_scopes: str = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"
     google_drive_enabled: bool = True

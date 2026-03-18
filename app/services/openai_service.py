@@ -616,6 +616,8 @@ class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
         self._client_provider: str = ""
+        self._async_client: Any = None
+        self._async_client_provider: str = ""
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
@@ -653,6 +655,103 @@ class OpenAIService:
                 self._client = OpenAI(api_key=api_key)
             self._client_provider = provider
         return self._client
+
+    def _get_async_client(self) -> Any:
+        """AsyncOpenAI client for streaming and background tasks."""
+        provider = self._effective_provider()
+        if provider == "openrouter":
+            api_key = settings.openrouter_api_key or settings.openai_api_key
+        else:
+            api_key = settings.openai_api_key
+        if not api_key:
+            return None
+        if self._async_client is None or self._async_client_provider != provider:
+            from openai import AsyncOpenAI
+            if provider == "openrouter":
+                headers: dict[str, str] = {"X-Title": "Jarvis Pessoal"}
+                if settings.effective_base_url:
+                    headers["HTTP-Referer"] = settings.effective_base_url
+                self._async_client = AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=settings.openrouter_base_url,
+                    default_headers=headers,
+                )
+            else:
+                self._async_client = AsyncOpenAI(api_key=api_key)
+            self._async_client_provider = provider
+        return self._async_client
+
+    async def generate_reply_streaming(
+        self,
+        user_id: str,
+        user_text: str,
+        recent_messages: list[dict[str, str]],
+        memories: list,
+        chunk_callback: Any,  # async (partial: str) -> None
+        chunk_interval: int = 20,
+    ) -> str:
+        """Stream a reply to chunk_callback every chunk_interval tokens.
+
+        Returns the full reply text when done. Uses the chat.completions
+        streaming path (OpenAI or OpenRouter). Falls back to non-streaming
+        if async client unavailable.
+        """
+        client = self._get_async_client()
+        if client is None:
+            return await self.generate_reply(
+                user_id=user_id,
+                user_text=user_text,
+                recent_messages=recent_messages,
+                memories=memories,
+            )
+
+        system_content = SYSTEM_PROMPT
+        mem_ctx = format_memories_context(memories)
+        if mem_ctx:
+            system_content += f"\n\n{mem_ctx}"
+        system_content += f"\n\n{_runtime_capabilities_context()}"
+
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+        for m in recent_messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role in {"user", "assistant", "system"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_text})
+
+        try:
+            full_text = ""
+            token_count = 0
+            async with await client.chat.completions.create(
+                model=self._effective_model(),
+                messages=messages,
+                stream=True,
+            ) as stream:
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                    if delta:
+                        full_text += delta
+                        token_count += 1
+                        if chunk_callback and token_count % chunk_interval == 0:
+                            try:
+                                await chunk_callback(full_text)
+                            except Exception:
+                                pass  # callback errors must not break streaming
+            # Final callback with complete text
+            if chunk_callback and full_text:
+                try:
+                    await chunk_callback(full_text)
+                except Exception:
+                    pass
+            return full_text or "Desculpe, não consegui gerar uma resposta. Tente novamente."
+        except Exception as exc:
+            logger.warning("Streaming failed (%s), falling back to non-streaming", exc)
+            return await self.generate_reply(
+                user_id=user_id,
+                user_text=user_text,
+                recent_messages=recent_messages,
+                memories=memories,
+            )
 
     async def generate_reply(
         self,
