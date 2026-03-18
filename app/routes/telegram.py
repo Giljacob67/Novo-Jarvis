@@ -101,6 +101,8 @@ HELP_TEXT = (
     "/portcheck <url> — verificar portal web\n"
     "/formsession <url> — iniciar sessão de formulário\n"
     "/browserartifacts <session_id> — ver artefatos da sessão\n"
+    "🔗 Enriquecimento cross-app:\n"
+    "/enrichevent <título> — briefing pré-reunião com e-mails, Drive e tarefas\n"
     "/help — ver esta mensagem\n\n"
     "Ou envie texto livre ou nota de voz para conversar comigo!"
 )
@@ -869,6 +871,9 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
     if text.startswith("/browserartifacts"):
         return await _cmd_browserartifacts(db, user_id, text)
 
+    if text.startswith("/enrichevent"):
+        return await _cmd_enrichevent(db, user_id, text)
+
     return await handle_free_text(db, user_id, text, raw_update=body)
 
 
@@ -891,6 +896,27 @@ async def _cmd_briefingnow(db: Session, user_id: str) -> str:
 
 async def _cmd_checkin(db: Session, user_id: str) -> str:
     return await proactive_service.generate_midday_checkin(db, user_id)
+
+
+async def _cmd_enrichevent(db: Session, user_id: str, text: str) -> str:
+    """Pre-meeting cross-app briefing: e-mails, Drive, Tasks, Memories."""
+    from app.services.cross_app_enrichment_service import find_and_enrich_event
+
+    title = text[len("/enrichevent"):].strip()
+    if not title:
+        return (
+            "📋 *Enriquecimento Cross-App*\n\n"
+            "Uso: `/enrichevent <título do evento>`\n"
+            "Exemplo: `/enrichevent Reunião com João sobre contrato`\n\n"
+            "Jarvis vai buscar em e-mails, Drive e tarefas tudo relacionado ao evento "
+            "e montar um briefing executivo pré-reunião."
+        )
+
+    await telegram_service.send_chat_action(
+        int(settings.telegram_allowed_user_id), "typing"
+    )
+    result = await find_and_enrich_event(db, user_id, title)
+    return result
 
 
 async def _cmd_focus(db: Session, user_id: str) -> str:

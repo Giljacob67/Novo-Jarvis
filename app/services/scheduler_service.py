@@ -187,7 +187,28 @@ async def _check_reminders(user_id: str) -> None:
         upcoming = await check_upcoming_events(db, user_id)
         for ev in upcoming:
             title = ev.get("title", "?")
-            msg = f"⏰ Lembrete: Evento em breve — *{title}*\n{ev.get('start', '')}"
+            start = ev.get("start", "")
+
+            # Try enriched cross-app briefing if enabled; fall back to simple reminder
+            msg = None
+            if settings.cross_app_enrichment_enabled:
+                try:
+                    from app.services.cross_app_enrichment_service import (
+                        enrich_event_by_title,
+                        _extract_attendee_names,
+                    )
+                    attendees = _extract_attendee_names(ev)
+                    briefing = await enrich_event_by_title(
+                        db, user_id, title, event_start=start, attendees=attendees
+                    )
+                    if briefing:
+                        msg = f"⏰ *Reunião em breve:* {title}\n\n{briefing}"
+                except Exception:
+                    logger.warning("Cross-app enrichment failed for event=%s", title)
+
+            if not msg:
+                msg = f"⏰ Lembrete: Evento em breve — *{title}*\n{start}"
+
             await send_proactive_message(
                 db,
                 user_id,
