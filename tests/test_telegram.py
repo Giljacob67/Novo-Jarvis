@@ -304,6 +304,40 @@ def test_telegram_headlines_command(mock_headlines, client: TestClient, _patch_t
     mock_headlines.assert_awaited_once()
 
 
+def test_telegram_dismiss_critical_alert_from_history(client: TestClient, _patch_telegram_send, db_session) -> None:
+    from app.models.conversation import Conversation
+    from app.models.message import Message
+
+    conv = Conversation(user_id=str(ALLOWED_USER_ID))
+    db_session.add(conv)
+    db_session.commit()
+    db_session.refresh(conv)
+
+    db_session.add(
+        Message(
+            conversation_id=conv.id,
+            role="assistant",
+            channel="telegram",
+            text=(
+                "📧 Alerta crítico: Comprovante de assinatura do documento: Termo de transacao confissao de divida\n"
+                "Ação sugerida: revisar e responder agora."
+            ),
+        )
+    )
+    db_session.commit()
+
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen, \
+         patch("app.services.assistant_service.proactive_service.suppress_critical_email_alert") as mock_suppress:
+        mock_suppress.return_value = {"ok": True, "created": 1}
+        payload = _make_payload(157, text="Termo já assinado, pode excluir o alerta")
+        response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+        assert response.status_code == 200
+        sent_text = _patch_telegram_send.call_args[0][1].lower()
+        assert "alerta marcado como resolvido" in sent_text
+        mock_suppress.assert_called_once()
+        mock_gen.assert_not_called()
+
+
 def test_telegram_myday_does_not_call_openai(client: TestClient, _patch_telegram_send) -> None:
     with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
         payload = _make_payload(15, text="/myday")

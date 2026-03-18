@@ -24,6 +24,7 @@ from app.services import autonomy_service
 from app.services import conversation_state_service
 from app.services import executive_service
 from app.services import news_service
+from app.services import proactive_service
 from app.schemas.day import DayOverview, CalendarEvent, Task, Email
 from app.utils.date_utils import parse_datetime_local
 
@@ -844,6 +845,39 @@ def _looks_like_web_offer(text: str) -> bool:
     )
 
 
+def _is_alert_dismiss_intent(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        k in t
+        for k in (
+            "excluir o alerta",
+            "remover alerta",
+            "apagar alerta",
+            "desconsiderar alerta",
+            "ignorar alerta",
+            "já assinado",
+            "ja assinado",
+            "já resolvido",
+            "ja resolvido",
+            "pode tirar o alerta",
+        )
+    )
+
+
+def _extract_latest_critical_alert_subject(messages: list[Message]) -> str | None:
+    for msg in reversed(messages):
+        if msg.role != "assistant":
+            continue
+        match = re.search(r"Alerta crítico:\s*(.+)", msg.text or "", flags=re.IGNORECASE)
+        if not match:
+            continue
+        subject = match.group(1).strip()
+        if "\n" in subject:
+            subject = subject.split("\n", 1)[0].strip()
+        return subject
+    return None
+
+
 def _extract_first_url(text: str) -> str | None:
     match = re.search(r"https?://[^\s<>()]+", text or "", flags=re.IGNORECASE)
     if not match:
@@ -902,6 +936,22 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
 
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
+
+    if _is_alert_dismiss_intent(augmented_text):
+        subject = _extract_latest_critical_alert_subject(recent[:-1])
+        if subject:
+            proactive_service.suppress_critical_email_alert(db, user_id, subject=subject, source="user_ack")
+            ack_reply = (
+                "Perfeito, alerta marcado como resolvido.\n"
+                f"Não vou te notificar de novo sobre: {subject}"
+            )
+        else:
+            ack_reply = (
+                "Perfeito. Posso silenciar esse alerta, mas não encontrei o assunto exato no histórico recente.\n"
+                "Me envie o assunto do alerta para eu bloquear com precisão."
+            )
+        _save_message(db, conv.id, role="assistant", text=ack_reply)
+        return ack_reply
 
     if _is_news_or_web_search_intent(augmented_text):
         web_reply = await _handle_web_research_intent(db, user_id, augmented_text)

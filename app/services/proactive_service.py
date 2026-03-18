@@ -1,5 +1,7 @@
 import json
 import logging
+import hashlib
+import re
 from datetime import datetime, timezone, time, timedelta
 
 from sqlalchemy.orm import Session
@@ -15,6 +17,8 @@ from app.services import google_tasks as google_tasks_service
 from app.services import google_calendar as google_calendar_service
 
 logger = logging.getLogger(__name__)
+ALERT_SUPPRESSION_CATEGORY = "alert_suppression"
+ALERT_SUPPRESSION_PREFIX = "critical_email:"
 
 
 def _log_action(db: Session, event_type: str, status: str, details: dict) -> None:
@@ -32,6 +36,89 @@ def _log_action(db: Session, event_type: str, status: str, details: dict) -> Non
     )
     db.add(entry)
     db.commit()
+
+
+def _normalize_subject(subject: str) -> str:
+    text = (subject or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _subject_key(subject: str) -> str:
+    normalized = _normalize_subject(subject)
+    if not normalized:
+        return ""
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"subj:{digest}"
+
+
+def _email_alert_keys(message_id: str | None, subject: str) -> list[str]:
+    keys: list[str] = []
+    msg = (message_id or "").strip()
+    if msg:
+        keys.append(f"msg:{msg}")
+    subj_key = _subject_key(subject)
+    if subj_key:
+        keys.append(subj_key)
+    return keys
+
+
+def _get_email_alert_suppressions(db: Session, user_id: str) -> set[str]:
+    rows = db.query(MemoryItem).filter(
+        MemoryItem.user_id == user_id,
+        MemoryItem.category == ALERT_SUPPRESSION_CATEGORY,
+        MemoryItem.is_active == True,
+    ).all()
+    keys: set[str] = set()
+    for row in rows:
+        content = (row.content or "").strip()
+        if content.startswith(ALERT_SUPPRESSION_PREFIX):
+            keys.add(content[len(ALERT_SUPPRESSION_PREFIX):])
+    return keys
+
+
+def suppress_critical_email_alert(
+    db: Session,
+    user_id: str,
+    subject: str,
+    message_id: str | None = None,
+    source: str = "user_ack",
+) -> dict:
+    keys = _email_alert_keys(message_id, subject)
+    if not keys:
+        return {"ok": False, "reason": "missing_subject"}
+
+    existing = _get_email_alert_suppressions(db, user_id)
+    created = 0
+    for key in keys:
+        if key in existing:
+            continue
+        db.add(
+            MemoryItem(
+                user_id=user_id,
+                category=ALERT_SUPPRESSION_CATEGORY,
+                content=f"{ALERT_SUPPRESSION_PREFIX}{key}",
+                source=source,
+                is_active=True,
+            )
+        )
+        created += 1
+    db.commit()
+    _log_action(
+        db,
+        "proactive_alert_suppressed",
+        "success",
+        {"user_id": user_id, "keys": keys, "subject": subject, "message_id": message_id},
+    )
+    return {"ok": True, "created": created, "keys": keys}
+
+
+def is_critical_email_alert_suppressed(db: Session, user_id: str, subject: str, message_id: str | None = None) -> bool:
+    suppression = _get_email_alert_suppressions(db, user_id)
+    if not suppression:
+        return False
+    keys = _email_alert_keys(message_id, subject)
+    return any(k in suppression for k in keys)
 
 
 def _now_in_tz() -> datetime:
@@ -356,6 +443,7 @@ async def detect_event_driven_alerts(db: Session, user_id: str) -> list[dict]:
         try:
             from app.services import executive_service
 
+            suppression = _get_email_alert_suppressions(db, user_id)
             result = await google_gmail_service.list_messages(
                 db, user_id, query="is:unread in:inbox newer_than:1d", max_results=10
             )
@@ -365,6 +453,9 @@ async def detect_event_driven_alerts(db: Session, user_id: str) -> list[dict]:
                     continue
                 subject = m.get("subject", "(sem assunto)")
                 msg_id = m.get("id", "")
+                keys = _email_alert_keys(msg_id, subject)
+                if any(k in suppression for k in keys):
+                    continue
                 alerts.append(
                     {
                         "subject": f"critical_email_{msg_id}",
