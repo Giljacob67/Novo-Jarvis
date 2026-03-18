@@ -640,6 +640,8 @@ class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
         self._client_provider: str = ""
+        self._async_client: Any = None
+        self._async_client_provider: str = ""
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
@@ -677,6 +679,17 @@ class OpenAIService:
                 self._client = OpenAI(api_key=api_key)
             self._client_provider = provider
         return self._client
+
+    def _get_async_client(self) -> Any:
+        """AsyncOpenAI client used for background extraction tasks."""
+        api_key = settings.openai_api_key
+        if not api_key:
+            return None
+        if self._async_client is None:
+            from openai import AsyncOpenAI
+            self._async_client = AsyncOpenAI(api_key=api_key)
+            self._async_client_provider = "openai"
+        return self._async_client
 
     async def extract_profile_updates(
         self,
