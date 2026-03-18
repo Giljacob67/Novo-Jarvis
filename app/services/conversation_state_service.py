@@ -27,7 +27,7 @@ def _infer_intent(text: str) -> tuple[str, float]:
         return "tasks", 0.86
     if any(k in t for k in ("drive", "arquivo", "documento")):
         return "drive", 0.8
-    if any(k in t for k in ("notícia", "noticias", "news", "internet", "google")):
+    if any(k in t for k in ("notícia", "noticias", "news", "internet", "google", "manchetes", "headlines")):
         return "web_research", 0.8
     if any(k in t for k in ("resolve isso", "faça isso", "faz isso")):
         return "goal_execution", 0.75

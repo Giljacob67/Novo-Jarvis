@@ -23,6 +23,7 @@ from app.services import google_drive_service
 from app.services import autonomy_service
 from app.services import conversation_state_service
 from app.services import executive_service
+from app.services import news_service
 from app.schemas.day import DayOverview, CalendarEvent, Task, Email
 from app.utils.date_utils import parse_datetime_local
 
@@ -851,29 +852,27 @@ def _extract_first_url(text: str) -> str | None:
 
 
 async def _handle_web_research_intent(db: Session, user_id: str, text: str) -> str:
+    url = _extract_first_url(text)
+    if not url:
+        try:
+            return await news_service.get_automatic_headlines_brief(user_text=text, per_topic=3)
+        except Exception:
+            logger.exception("Automatic headlines mode failed")
+            return "Não consegui montar as manchetes automáticas agora. Tente novamente em instantes."
+
     if not _browser_access_effective():
         return (
-            "No momento, a navegação web não está ativa aqui. "
-            "Se quiser, o administrador pode habilitar browser supervisionado (domínios permitidos)."
+            "Para pesquisar uma URL específica, a navegação web supervisionada não está ativa aqui. "
+            "Posso continuar te entregando manchetes automáticas por tema (tecnologia, IA, Brasil e Mundo)."
         )
 
-    url = _extract_first_url(text)
-    if url:
-        from app.services import workflow_service
+    from app.services import workflow_service
 
-        result = await workflow_service.run_workflow(db, user_id, "website_research", [url])
-        if isinstance(result, str):
-            return result
-        return "❌ Não consegui concluir a pesquisa nessa URL."
+    result = await workflow_service.run_workflow(db, user_id, "website_research", [url])
+    if isinstance(result, str):
+        return result
+    return "❌ Não consegui concluir a pesquisa nessa URL."
 
-    allowed_domains = [d.strip() for d in settings.browser_allowed_domains.split(",") if d.strip()]
-    domains_preview = ", ".join(allowed_domains[:5]) if allowed_domains else "nenhum"
-    return (
-        "Consigo pesquisar na web supervisionada, mas preciso de uma fonte (URL) para te trazer manchetes reais.\n"
-        f"Domínios permitidos agora: {domains_preview}\n"
-        "Me envie um link e eu pesquiso em seguida.\n"
-        "Exemplo: /webresearch https://g1.globo.com"
-    )
 
 
 def _save_message(db: Session, conversation_id: int, role: str, text: str, channel: str = "telegram", raw_json: str | None = None) -> Message:

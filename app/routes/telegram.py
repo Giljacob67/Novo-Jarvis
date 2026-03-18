@@ -37,6 +37,7 @@ from app.services import approval_service
 from app.services import proactive_service
 from app.services import workflow_service
 from app.services import browser_service
+from app.services import news_service
 from app.utils.date_utils import parse_datetime_local
 from app.utils.gmail_utils import format_messages_list_telegram
 
@@ -51,6 +52,7 @@ HELP_TEXT = (
     "/briefingnow — briefing executivo agora\n"
     "/checkin — checkpoint executivo de meio-dia\n"
     "/focus — top 3 prioridades agora\n"
+    "/headlines [tema] — manchetes automáticas (tecnologia, IA, Brasil, Mundo)\n"
     "/review — fechamento do dia\n"
     "/remember <texto> — salvar uma anotação\n"
     "/memories — listar anotações recentes\n"
@@ -705,6 +707,8 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
         return await _cmd_checkin(db, user_id)
     if text.startswith("/focus"):
         return await _cmd_focus(db, user_id)
+    if text.startswith("/headlines"):
+        return await _cmd_headlines(db, user_id, text)
     if text.startswith("/briefing"):
         return await _cmd_briefing(db, user_id)
     if text.startswith("/review"):
@@ -892,6 +896,11 @@ async def _cmd_checkin(db: Session, user_id: str) -> str:
 async def _cmd_focus(db: Session, user_id: str) -> str:
     card = await executive_service.build_context_card(db, user_id)
     return executive_service.compose_focus_message(card)
+
+
+async def _cmd_headlines(db: Session, user_id: str, text: str) -> str:
+    query = text[len("/headlines"):].strip()
+    return await news_service.get_automatic_headlines_brief(user_text=query, per_topic=3)
 
 
 async def _cmd_review(db: Session, user_id: str) -> str:

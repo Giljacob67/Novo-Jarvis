@@ -32,6 +32,7 @@ Integra com Telegram, OpenAI, Google Calendar, Google Tasks e Gmail.
 | `/start` | Mensagem de boas-vindas e lista de comandos |
 | `/help` | Lista de comandos disponíveis |
 | `/myday` | Resumo do dia (agenda, tarefas, e-mails prioritários) |
+| `/headlines [tema]` | Manchetes automáticas por tema (`tecnologia`, `ia`, `brasil`, `mundo`) |
 | `/remember <texto>` | Salva uma anotação/lembrete |
 | `/memories` | Lista anotações recentes |
 | `/connectgoogle` | Envia link para conectar conta Google |

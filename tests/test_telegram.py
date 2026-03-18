@@ -227,38 +227,43 @@ def test_telegram_schedule_uses_recent_ocr_context(mock_ocr, mock_create_task, c
 def test_telegram_news_query_without_browser_is_deterministic(client: TestClient, _patch_telegram_send) -> None:
     from app.config import settings as app_settings
 
-    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen, \
+         patch("app.services.news_service.get_automatic_headlines_brief", new_callable=AsyncMock) as mock_headlines:
         old_enabled = app_settings.browser_automation_enabled
         old_domains = app_settings.browser_allowed_domains
         try:
             app_settings.browser_automation_enabled = False
             app_settings.browser_allowed_domains = ""
+            mock_headlines.return_value = "🗞️ *Manchetes automáticas (agora)*"
             payload = _make_payload(144, text="Busque notícias sobre o openclaw")
             response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
             assert response.status_code == 200
-            sent_text = _patch_telegram_send.call_args[0][1].lower()
-            assert "navegação web não está ativa" in sent_text or "não está ativa" in sent_text
+            sent_text = _patch_telegram_send.call_args[0][1]
+            assert "Manchetes automáticas" in sent_text
+            mock_headlines.assert_awaited_once()
             mock_gen.assert_not_called()
         finally:
             app_settings.browser_automation_enabled = old_enabled
             app_settings.browser_allowed_domains = old_domains
 
 
-def test_telegram_news_query_with_browser_enabled_requires_url(client: TestClient, _patch_telegram_send) -> None:
+def test_telegram_news_query_with_browser_enabled_uses_automatic_mode(client: TestClient, _patch_telegram_send) -> None:
     from app.config import settings as app_settings
 
-    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen, \
+         patch("app.services.news_service.get_automatic_headlines_brief", new_callable=AsyncMock) as mock_headlines:
         old_enabled = app_settings.browser_automation_enabled
         old_domains = app_settings.browser_allowed_domains
         try:
             app_settings.browser_automation_enabled = True
             app_settings.browser_allowed_domains = "g1.globo.com,bbc.com"
+            mock_headlines.return_value = "🗞️ *Manchetes automáticas (agora)*\n\n*Tecnologia*"
             payload = _make_payload(154, text="Jarvis, quais são as principais notícias do dia?")
             response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
             assert response.status_code == 200
-            sent_text = _patch_telegram_send.call_args[0][1].lower()
-            assert "preciso de uma fonte" in sent_text
-            assert "domínios permitidos" in sent_text or "dominios permitidos" in sent_text
+            sent_text = _patch_telegram_send.call_args[0][1]
+            assert "Manchetes automáticas" in sent_text
+            mock_headlines.assert_awaited_once()
             mock_gen.assert_not_called()
         finally:
             app_settings.browser_automation_enabled = old_enabled
@@ -286,6 +291,17 @@ def test_telegram_news_query_with_url_uses_workflow(mock_run_workflow, client: T
         finally:
             app_settings.browser_automation_enabled = old_enabled
             app_settings.browser_allowed_domains = old_domains
+
+
+@patch("app.services.news_service.get_automatic_headlines_brief", new_callable=AsyncMock)
+def test_telegram_headlines_command(mock_headlines, client: TestClient, _patch_telegram_send) -> None:
+    mock_headlines.return_value = "🗞️ *Manchetes automáticas (agora)*\n\n*IA*"
+    payload = _make_payload(156, text="/headlines ia")
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "Manchetes automáticas" in sent_text
+    mock_headlines.assert_awaited_once()
 
 
 def test_telegram_myday_does_not_call_openai(client: TestClient, _patch_telegram_send) -> None:
