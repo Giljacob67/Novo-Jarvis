@@ -224,6 +224,9 @@ class Settings(BaseSettings):
             return f"{base}/auth/google/callback"
         return ""
 
+    # Web dashboard
+    dashboard_token: str = ""  # Falls back to telegram_webhook_secret; empty = open (dev mode)
+
     browser_automation_enabled: bool = False
     browser_headless: bool = True
     browser_default_timeout_ms: int = 15000
