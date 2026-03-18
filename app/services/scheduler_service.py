@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 
 from sqlalchemy.exc import IntegrityError
 
@@ -180,14 +180,18 @@ async def _check_reminders(user_id: str) -> None:
         from app.services.proactive_service import (
             check_upcoming_events,
             check_due_tasks,
+            check_stale_followups,
             detect_event_driven_alerts,
+            generate_pre_meeting_briefing,
+            generate_smart_email_alert,
             send_proactive_message,
         )
 
+        # ── Pre-meeting briefings (context-enriched via LLM) ──────────────
         upcoming = await check_upcoming_events(db, user_id)
         for ev in upcoming:
             title = ev.get("title", "?")
-            msg = f"⏰ Lembrete: Evento em breve — *{title}*\n{ev.get('start', '')}"
+            msg = await generate_pre_meeting_briefing(db, user_id, ev)
             await send_proactive_message(
                 db,
                 user_id,
@@ -197,6 +201,7 @@ async def _check_reminders(user_id: str) -> None:
                 trigger_type="routine",
             )
 
+        # ── Due tasks digest ───────────────────────────────────────────────
         due_tasks = await check_due_tasks(db, user_id)
         if due_tasks:
             lines = [f"📋 *{len(due_tasks)} tarefa(s) vencendo hoje:*"]
@@ -211,8 +216,17 @@ async def _check_reminders(user_id: str) -> None:
                 trigger_type="routine",
             )
 
+        # ── Event-driven alerts (email critical, conflicts, approvals) ─────
         event_alerts = await detect_event_driven_alerts(db, user_id)
         for alert in event_alerts[:8]:
+            # Enrich critical-email alerts with AI summary + suggested action
+            if alert.get("proactive_category") == "email_critical":
+                email_data = alert.get("email_data") or {
+                    "subject": alert.get("subject", ""),
+                    "snippet": "",
+                }
+                enriched_msg = await generate_smart_email_alert(email_data)
+                alert = {**alert, "message": enriched_msg}
             await send_proactive_message(
                 db,
                 user_id,
@@ -221,6 +235,25 @@ async def _check_reminders(user_id: str) -> None:
                 proactive_category=alert.get("proactive_category", "general"),
                 trigger_type=alert.get("trigger_type", "event"),
             )
+
+        # ── Stale follow-up nudges ─────────────────────────────────────────
+        if settings.stale_followup_nudge_enabled:
+            stale = check_stale_followups(db, user_id)
+            if stale:
+                lines = ["📌 *Follow-ups pendentes — ainda não resolvidos:*"]
+                for m in stale:
+                    age_h = int(
+                        (datetime.now(timezone.utc) - m.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+                    )
+                    lines.append(f"  • {m.content[:80]} _(há {age_h}h)_")
+                await send_proactive_message(
+                    db,
+                    user_id,
+                    "\n".join(lines),
+                    subject="stale_followup_nudge",
+                    proactive_category="followup",
+                    trigger_type="routine",
+                )
 
     except Exception:
         logger.exception("Reminder check failed")

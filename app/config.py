@@ -198,6 +198,10 @@ class Settings(BaseSettings):
     proactive_daily_limit_per_category: int = 5
     proactive_event_triggers_enabled: bool = True
     proactive_pending_approval_alert_hours: int = 6
+    pre_meeting_briefing_enabled: bool = True       # LLM-enriched pre-meeting context
+    smart_email_alerts_enabled: bool = True         # AI email urgency + suggested action
+    stale_followup_nudge_enabled: bool = True       # nudge for follow-ups not resolved
+    stale_followup_hours: int = 48                  # hours after which a followup is "stale"
 
     google_gmail_enabled: bool = True
     google_gmail_scopes: str = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"

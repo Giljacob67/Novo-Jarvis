@@ -429,6 +429,133 @@ async def get_proactive_suggestions(db: Session, user_id: str) -> dict:
     }
 
 
+def check_stale_followups(db: Session, user_id: str) -> list[MemoryItem]:
+    """Return follow-up memories older than stale_followup_hours that haven't been resolved."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.stale_followup_hours)
+    return (
+        db.query(MemoryItem)
+        .filter(
+            MemoryItem.user_id == user_id,
+            MemoryItem.is_active == True,  # noqa: E712
+            MemoryItem.category == "followup",
+            MemoryItem.created_at <= cutoff,
+        )
+        .order_by(MemoryItem.created_at.asc())
+        .limit(3)
+        .all()
+    )
+
+
+async def generate_pre_meeting_briefing(db: Session, user_id: str, event: dict) -> str:
+    """Generate a context-rich LLM-powered pre-meeting notification."""
+    title = event.get("title", "Reunião")
+    location = event.get("location", "")
+    start_str = event.get("start", "")
+
+    diff_minutes = 15
+    try:
+        from dateutil.parser import parse as dt_parse
+        import zoneinfo
+        start_dt = dt_parse(start_str)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=zoneinfo.ZoneInfo(settings.default_timezone))
+        diff_minutes = max(1, int((start_dt - _now_in_tz()).total_seconds() / 60))
+    except Exception:
+        pass
+
+    mins_text = f"{diff_minutes} min"
+    base = f"🗓️ *{title}* em {mins_text}"
+    if location:
+        base += f"\n📍 {location}"
+
+    if not settings.pre_meeting_briefing_enabled:
+        return base
+
+    # Gather relevant memories
+    all_memories = get_memories_by_context(
+        db, user_id, ["general", "task", "followup", "project", "contact"], limit=40
+    )
+    title_words = [w.lower() for w in title.split() if len(w) > 3]
+    relevant = [
+        m for m in all_memories
+        if any(kw in m.content.lower() for kw in title_words)
+    ][:5]
+
+    if not relevant:
+        return base
+
+    try:
+        from openai import AsyncOpenAI
+        api_key = settings.openai_api_key
+        if not api_key:
+            return base
+        client = AsyncOpenAI(api_key=api_key)
+        ctx_text = "\n".join(f"- {m.content}" for m in relevant)
+        prompt = (
+            f'Você é Jarvis, assistente pessoal executivo.\n'
+            f'O usuário tem a reunião "{title}" em {mins_text}.'
+            + (f"\nLocal: {location}" if location else "")
+            + f"\n\nContexto relevante registrado:\n{ctx_text}\n\n"
+            "Escreva uma notificação de pré-reunião em 3-4 linhas (português, direto):\n"
+            "• Quando começa\n"
+            "• 1-2 pontos do contexto que são relevantes para esta reunião\n"
+            "• 1 ação rápida sugerida (se houver)\n"
+            "Use emojis com moderação. Não repita o título como título. Seja acionável."
+        )
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.3,
+        )
+        result = (response.choices[0].message.content or "").strip()
+        return result if result else base
+    except Exception:
+        logger.warning("generate_pre_meeting_briefing LLM call failed, using base message")
+        return base
+
+
+async def generate_smart_email_alert(email_data: dict) -> str:
+    """Generate an AI-enriched email urgency alert with a concrete suggested action."""
+    subject = email_data.get("subject", "(sem assunto)")
+    sender = email_data.get("from", email_data.get("sender", ""))
+    snippet = (email_data.get("snippet", "") or "").strip()
+
+    base = f"📧 *E-mail urgente:* {subject}" + (f"\nDe: {sender}" if sender else "")
+
+    if not settings.smart_email_alerts_enabled or not snippet:
+        return base
+
+    try:
+        from openai import AsyncOpenAI
+        api_key = settings.openai_api_key
+        if not api_key:
+            return base
+        client = AsyncOpenAI(api_key=api_key)
+        prompt = (
+            "Você é Jarvis, assistente pessoal executivo.\n"
+            f"Um e-mail urgente chegou:\nAssunto: {subject}\n"
+            + (f"De: {sender}\n" if sender else "")
+            + f"Trecho: {snippet[:400]}\n\n"
+            "Escreva um alerta em 3 linhas (português):\n"
+            "1. Resumo do e-mail (o que é, de quem, por que é urgente)\n"
+            "2. Prazo ou impacto (se mencionado; caso contrário omita esta linha)\n"
+            "3. Ação concreta sugerida (responder, encaminhar, agendar, etc.)\n"
+            "Use emojis relevantes. Seja direto e acionável. Máximo 60 palavras."
+        )
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0.2,
+        )
+        result = (response.choices[0].message.content or "").strip()
+        return result if result else base
+    except Exception:
+        logger.warning("generate_smart_email_alert LLM call failed, using base message")
+        return base
+
+
 async def detect_event_driven_alerts(db: Session, user_id: str) -> list[dict]:
     if not settings.proactive_event_triggers_enabled:
         return []
@@ -462,6 +589,12 @@ async def detect_event_driven_alerts(db: Session, user_id: str) -> list[dict]:
                         "message": f"📧 Alerta crítico: {subject}\nAção sugerida: revisar e responder agora.",
                         "proactive_category": "email_critical",
                         "trigger_type": "event",
+                        # raw email data passed through for AI enrichment in scheduler
+                        "email_data": {
+                            "subject": subject,
+                            "from": m.get("from", m.get("sender", "")),
+                            "snippet": m.get("snippet", ""),
+                        },
                     }
                 )
         except Exception:
