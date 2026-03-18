@@ -934,8 +934,21 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
         raw_json=json.dumps(raw_update, ensure_ascii=False) if raw_update else None,
     )
 
+    # Detect if user just made a commitment ("vou fazer X") — store cross-session
+    commitment = conversation_state_service.detect_commitment(text)
+    if commitment:
+        conversation_state_service.add_commitment(db, user_id, commitment)
+
+    # Clear pending question now that user has replied
+    conversation_state_service.set_pending_question(db, user_id, None)
+
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
+
+    # Inject multi-turn context (pending question + open commitments) as system prefix
+    multiturn_ctx = conversation_state_service.build_multiturn_context(db, user_id)
+    if multiturn_ctx:
+        history = [{"role": "system", "content": f"## Contexto multi-turno\n{multiturn_ctx}"}] + history
 
     if _is_alert_dismiss_intent(augmented_text):
         subject = _extract_latest_critical_alert_subject(recent[:-1])
@@ -1014,6 +1027,11 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
             logger.exception("Failed to apply executive response composer")
 
     _save_message(db, conv.id, role="assistant", text=reply)
+
+    # Track any open question Jarvis just asked — used in next user turn
+    pending_q = conversation_state_service.detect_pending_question(reply)
+    if pending_q:
+        conversation_state_service.set_pending_question(db, user_id, pending_q)
 
     return reply
 
