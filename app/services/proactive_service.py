@@ -217,11 +217,7 @@ async def generate_morning_briefing(db: Session, user_id: str) -> str:
     from app.services import executive_service
 
     card = await executive_service.build_context_card(db, user_id)
-    return executive_service.compose_executive_message(
-        "Briefing Matinal (07:00)",
-        card,
-        shortcuts=["/focus", "/checkin", "/approvals"],
-    )
+    return executive_service.compose_morning_briefing(card)
 
 
 async def generate_evening_review(db: Session, user_id: str) -> str:

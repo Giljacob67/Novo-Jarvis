@@ -12,6 +12,7 @@ from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
 from app.services import approval_service
+from app.services.memory_service import get_memories_by_context
 
 
 @dataclass
@@ -19,6 +20,16 @@ class EmailSignal:
     urgency: str
     score: int
     reason: str
+
+
+@dataclass
+class BriefingItem:
+    severity: str
+    title: str
+    detail: str
+    action: str
+    due_hint: str = ""
+    source: str = ""
 
 
 def _parse_dt(raw: str) -> datetime | None:
@@ -44,9 +55,12 @@ def classify_email_priority(message: dict[str, Any]) -> EmailSignal:
     snippet = (message.get("snippet") or "").lower()
     blob = f"{subject} {sender} {snippet}"
 
-    urgent_kw = ("urgente", "prazo", "venc", "intima", "judicial", "falha", "error", "vpn", "aws", "security")
-    noise_kw = ("newsletter", "promo", "oferta", "sale", "assinatura", "boletim", "trilhas várias")
-    important_kw = ("reunião", "reuniao", "cliente", "follow-up", "followup", "proposta", "contrato")
+    urgent_kw = (
+        "urgente", "prazo", "venc", "intima", "judicial", "falha", "error", "vpn", "aws", "security",
+        "atraso", "suspens", "negativ", "bloque", "inadimpl", "confiss", "dívida", "divida",
+    )
+    noise_kw = ("newsletter", "promo", "oferta", "sale", "boletim", "trilhas várias", "unsubscribe", "descadastre")
+    important_kw = ("reunião", "reuniao", "cliente", "follow-up", "followup", "proposta", "contrato", "assinatura")
 
     if any(k in blob for k in urgent_kw):
         return EmailSignal("urgente", 95, "contém sinais de urgência/prazo")
@@ -87,6 +101,7 @@ async def build_context_card(db: Session, user_id: str) -> dict[str, Any]:
     horizon = now + timedelta(hours=24)
     status = google_oauth_service.get_status(db, user_id)
 
+    raw_events: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
     emails: list[dict[str, Any]] = []
@@ -94,7 +109,7 @@ async def build_context_card(db: Session, user_id: str) -> dict[str, Any]:
     if status.get("connected"):
         try:
             raw_events = await google_calendar_service.list_upcoming_events(
-                db, user_id, days=2, limit=25, tz=settings.default_timezone
+                db, user_id, days=5, limit=40, tz=settings.default_timezone
             )
             for ev in raw_events:
                 start = _parse_dt(ev.get("start", ""))
@@ -138,15 +153,18 @@ async def build_context_card(db: Session, user_id: str) -> dict[str, Any]:
     scored_emails.sort(key=lambda x: x["score"], reverse=True)
 
     approvals = approval_service.list_pending_approvals(db, user_id)
+    followups = get_memories_by_context(db, user_id, ["followup", "decision", "project"], limit=8)
 
     return {
         "status": status,
         "events_24h": events,
+        "events_upcoming": raw_events,
         "calendar_conflicts": conflicts,
         "tasks_overdue": overdue_tasks,
         "tasks_due_soon": due_soon_tasks,
         "emails_scored": scored_emails,
         "pending_approvals": approvals,
+        "followups": followups,
     }
 
 
@@ -207,6 +225,241 @@ def suggest_next_actions(card: dict[str, Any], limit: int = 3) -> list[str]:
     if not actions:
         actions.append("Executar foco profundo em 1 tarefa principal por 45 minutos")
     return actions[:limit]
+
+
+def _severity_rank(severity: str) -> int:
+    order = {"critical": 0, "high": 1, "moderate": 2}
+    return order.get(severity, 3)
+
+
+def _trim(text: str, max_len: int = 200) -> str:
+    raw = (text or "").strip()
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max_len - 3].rstrip() + "..."
+
+
+def _weekday_pt(dt: datetime) -> str:
+    names = {
+        0: "segunda-feira",
+        1: "terça-feira",
+        2: "quarta-feira",
+        3: "quinta-feira",
+        4: "sexta-feira",
+        5: "sábado",
+        6: "domingo",
+    }
+    return names.get(dt.weekday(), "dia útil")
+
+
+def _task_to_item(task: dict[str, Any], today_iso: str) -> BriefingItem:
+    title = task.get("title", "(tarefa sem título)")
+    due = (task.get("due") or "")[:10]
+    notes = _trim(task.get("notes") or "", 180)
+    blob = f"{title} {notes}".lower()
+
+    legal_kw = ("prazo", "process", "intima", "custa", "judicial")
+    finance_kw = ("fatura", "débito", "debito", "parcela", "atraso", "pagamento", "boleto")
+
+    severity = "moderate"
+    if due and due <= today_iso:
+        severity = "critical"
+    if any(k in blob for k in legal_kw + finance_kw):
+        if severity == "moderate":
+            severity = "high"
+        if due and due <= today_iso:
+            severity = "critical"
+
+    action = "Definir responsável e executar hoje."
+    if any(k in blob for k in legal_kw):
+        action = "Abrir o caso, validar prazo legal e montar plano de cumprimento."
+    if any(k in blob for k in finance_kw):
+        action = "Conferir valor e regularizar pendência financeira hoje."
+
+    detail = notes or "Pendência registrada na sua lista de tarefas."
+    due_hint = f"Vence em {due}" if due else ""
+    if due and due < today_iso:
+        due_hint = f"Vencida desde {due}"
+    if due and due == today_iso:
+        due_hint = f"Vence hoje ({due})"
+
+    return BriefingItem(
+        severity=severity,
+        title=title,
+        detail=detail,
+        action=action,
+        due_hint=due_hint,
+        source="tasks",
+    )
+
+
+def _email_to_item(email: dict[str, Any]) -> BriefingItem:
+    subject = email.get("subject", "(sem assunto)")
+    sender = email.get("from", "remetente desconhecido")
+    snippet = _trim(email.get("snippet") or "", 180)
+    urgency = email.get("urgency", "informativo")
+    reason = email.get("reason", "relevante para hoje")
+    blob = f"{subject} {snippet} {sender}".lower()
+
+    severity = "high" if urgency in {"urgente", "importante"} else "moderate"
+    if any(k in blob for k in ("atraso", "suspens", "negativ", "intima", "prazo", "judicial")):
+        severity = "critical"
+
+    action = "Ler mensagem completa e responder/delegar."
+    if "assinatura" in blob:
+        action = "Abrir o documento e concluir a assinatura eletrônica."
+    elif any(k in blob for k in ("atraso", "débito", "debito", "parcela", "fatura", "boleto")):
+        action = "Validar valores e regularizar a pendência financeira."
+    elif any(k in blob for k in ("intima", "process", "prazo")):
+        action = "Ler o conteúdo jurídico e definir responsável com prazo."
+
+    detail = f"{_trim(sender, 70)} — {reason}."
+    if snippet:
+        detail += f" {snippet}"
+    return BriefingItem(
+        severity=severity,
+        title=subject,
+        detail=detail,
+        action=action,
+        source="email",
+    )
+
+
+def _followup_to_item(content: str) -> BriefingItem:
+    text = _trim(content, 220)
+    return BriefingItem(
+        severity="moderate",
+        title="Follow-up pendente",
+        detail=text,
+        action="Fechar pendência ou reagendar com responsável.",
+        source="memory",
+    )
+
+
+def build_briefing_items(card: dict[str, Any]) -> list[BriefingItem]:
+    now = _now_local()
+    today_iso = now.date().isoformat()
+    items: list[BriefingItem] = []
+
+    for task in card.get("tasks_overdue", [])[:4]:
+        items.append(_task_to_item(task, today_iso))
+    for task in card.get("tasks_due_soon", [])[:4]:
+        items.append(_task_to_item(task, today_iso))
+
+    for email in card.get("emails_scored", [])[:6]:
+        if email.get("urgency") in {"urgente", "importante"}:
+            items.append(_email_to_item(email))
+
+    for c in card.get("calendar_conflicts", [])[:2]:
+        items.append(
+            BriefingItem(
+                severity="high",
+                title=f"Conflito de agenda: {c.get('a', '?')} x {c.get('b', '?')}",
+                detail="Há sobreposição de compromissos no calendário.",
+                action="Decidir prioridade e remarcar um dos eventos.",
+                source="calendar",
+            )
+        )
+
+    approvals = card.get("pending_approvals", [])
+    if approvals:
+        items.append(
+            BriefingItem(
+                severity="high",
+                title=f"{len(approvals)} aprovação(ões) pendente(s)",
+                detail="Ações críticas aguardam sua confirmação.",
+                action="Revisar com /approvals e decidir agora.",
+                source="approvals",
+            )
+        )
+
+    for m in card.get("followups", [])[:2]:
+        if getattr(m, "content", ""):
+            items.append(_followup_to_item(m.content))
+
+    items.sort(key=lambda i: _severity_rank(i.severity))
+    dedup: list[BriefingItem] = []
+    seen: set[str] = set()
+    for item in items:
+        key = item.title.lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(item)
+    return dedup[:10]
+
+
+def _agenda_deadline_lines(card: dict[str, Any], limit: int = 6) -> list[str]:
+    now = _now_local().date()
+    lines: list[str] = []
+
+    due_rows: list[tuple[str, str]] = []
+    for task in card.get("tasks_overdue", []) + card.get("tasks_due_soon", []):
+        due = (task.get("due") or "")[:10]
+        if not due:
+            continue
+        due_rows.append((due, task.get("title", "(tarefa)")))
+
+    for ev in card.get("events_upcoming", [])[:20]:
+        start = (ev.get("start") or "")[:10]
+        if not start:
+            continue
+        due_rows.append((start, f"Evento: {ev.get('title', '?')}"))
+
+    due_rows.sort(key=lambda x: x[0])
+    for date_str, title in due_rows:
+        if len(lines) >= limit:
+            break
+        tag = "HOJE" if date_str == now.isoformat() else date_str
+        lines.append(f"- {tag}: {_trim(title, 90)}")
+
+    return lines
+
+
+def compose_morning_briefing(card: dict[str, Any]) -> str:
+    now = _now_local()
+    items = build_briefing_items(card)
+    critical = [i for i in items if i.severity == "critical"]
+    high = [i for i in items if i.severity == "high"]
+    moderate = [i for i in items if i.severity == "moderate"]
+
+    lines: list[str] = [
+        f"Bom dia. Briefing de hoje — {_weekday_pt(now)}, {now.strftime('%d/%m')}.",
+        "",
+    ]
+
+    def _append_section(title: str, section_items: list[BriefingItem], max_items: int) -> None:
+        if not section_items:
+            return
+        lines.append(f"*{title}:*")
+        for idx, item in enumerate(section_items[:max_items], 1):
+            lines.append(f"{idx}. {item.title}")
+            lines.append(f"   {item.detail}")
+            if item.due_hint:
+                lines.append(f"   Prazo: {item.due_hint}")
+            lines.append(f"   Ação: {item.action}")
+        lines.append("")
+
+    _append_section("CRÍTICO — ação imediata", critical, 3)
+    _append_section("ATENÇÃO ALTA", high, 3)
+    _append_section("MODERADO", moderate, 2)
+
+    agenda_lines = _agenda_deadline_lines(card)
+    if agenda_lines:
+        lines.append("*PRAZOS E AGENDA (próximos dias):*")
+        lines.extend(agenda_lines)
+        lines.append("")
+
+    lines.append("*Próximas ações*")
+    for i, action in enumerate(suggest_next_actions(card, limit=3), 1):
+        lines.append(f"{i}. {action}")
+    lines.append("")
+    lines.append("*Atalhos*")
+    lines.append("• /focus")
+    lines.append("• /checkin")
+    lines.append("• /inboxsummary")
+    lines.append("• /approvals")
+    return "\n".join(lines)
 
 
 def compose_executive_message(title: str, card: dict[str, Any], shortcuts: list[str] | None = None) -> str:

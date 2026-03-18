@@ -112,6 +112,15 @@ def test_telegram_myday_command(client: TestClient, _patch_telegram_send) -> Non
     assert "Prioridades" in call_text
 
 
+def test_telegram_briefing_command_has_criticality_blocks(client: TestClient, _patch_telegram_send) -> None:
+    payload = _make_payload(153, text="/briefing")
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "CRÍTICO" in sent_text or "ATENÇÃO ALTA" in sent_text
+    assert "Próximas ações" in sent_text
+
+
 def test_telegram_remember_command(client: TestClient, _patch_telegram_send, db_session) -> None:
     payload = _make_payload(11, text="/remember Comprar leite")
     response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
