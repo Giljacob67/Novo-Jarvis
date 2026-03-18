@@ -292,6 +292,24 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 2. Verifique o endpoint `/health` para confirmar que está funcionando
 3. Conecte a conta Google via `/connectgoogle` no Telegram
 
+### Smoke test Railway (recomendado)
+
+Após cada deploy no Railway, rode:
+
+```bash
+APP_BASE_URL="https://novo-jarvis-production.up.railway.app" \
+TELEGRAM_BOT_TOKEN="..." \
+TELEGRAM_WEBHOOK_SECRET="..." \
+TELEGRAM_ALLOWED_USER_ID="7995994992" \
+python scripts/railway_smoke_test.py
+```
+
+Se quiser corrigir automaticamente webhook divergente:
+
+```bash
+python scripts/railway_smoke_test.py --fix-webhook
+```
+
 ## Roadmap
 
 ### Fase 2 ✅
