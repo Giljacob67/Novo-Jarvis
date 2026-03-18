@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import Integer, String, Text, Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
@@ -18,3 +19,6 @@ class MemoryItem(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
+    # Semantic embedding stored as JSON array of floats (text-embedding-3-small, 512-dim)
+    # Nullable: populated asynchronously after save; falls back to recency when absent
+    embedding_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)

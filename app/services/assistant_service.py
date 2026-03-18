@@ -13,7 +13,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.action_log import ActionLog
 from app.prompts import format_history_context
-from app.services.memory_service import save_memory, list_memories
+from app.services.memory_service import save_memory, list_memories, search_memories_semantic
 from app.services.openai_service import OpenAIService
 from app.services import google_oauth_service
 from app.services import google_calendar as google_calendar_service
@@ -969,7 +969,8 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
                 _save_message(db, conv.id, role="assistant", text=fallback_reply)
                 return fallback_reply
 
-    memories = list_memories(db, user_id, limit=settings.context_max_memories)
+    # Semantic search: retrieve memories most relevant to the current message
+    memories = await search_memories_semantic(db, user_id, augmented_text, limit=settings.context_max_memories)
     if state:
         memories = [
             SimpleNamespace(
