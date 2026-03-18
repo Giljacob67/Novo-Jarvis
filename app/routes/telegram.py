@@ -48,8 +48,8 @@ router = APIRouter()
 HELP_TEXT = (
     "Comandos disponíveis:\n"
     "/myday — resumo do dia\n"
-    "/briefing — briefing matinal\n"
-    "/briefingnow — briefing executivo agora\n"
+    "/briefing — briefing executivo inteligente (KPIs + insight de IA + prioridades)\n"
+    "/briefingnow — alias de /briefing\n"
     "/checkin — checkpoint executivo de meio-dia\n"
     "/focus — top 3 prioridades agora\n"
     "/headlines [tema] — manchetes automáticas (tecnologia, IA, Brasil, Mundo)\n"
@@ -882,11 +882,15 @@ async def _cmd_myday(db: Session, user_id: str) -> str:
 
 
 async def _cmd_briefing(db: Session, user_id: str) -> str:
-    return await proactive_service.generate_morning_briefing(db, user_id)
+    """On-demand enhanced briefing: KPIs + AI insight + priorities + next actions."""
+    card = await executive_service.build_context_card(db, user_id)
+    return await executive_service.compose_briefing_on_demand(card)
 
 
 async def _cmd_briefingnow(db: Session, user_id: str) -> str:
-    return await proactive_service.generate_morning_briefing(db, user_id)
+    """Alias for /briefing — same enhanced on-demand briefing."""
+    card = await executive_service.build_context_card(db, user_id)
+    return await executive_service.compose_briefing_on_demand(card)
 
 
 async def _cmd_checkin(db: Session, user_id: str) -> str:

@@ -496,3 +496,152 @@ def ensure_actionable_tail(reply: str, card: dict[str, Any]) -> str:
     tail += "\n".join(f"{i}. {a}" for i, a in enumerate(actions, 1))
     tail += "\n\n*Atalhos*\n• /focus\n• /myday"
     return reply.rstrip() + tail
+
+
+# ── Enhanced on-demand briefing ───────────────────────────────────────────────
+
+def _time_greeting() -> str:
+    """Return contextual Portuguese greeting based on current hour."""
+    hour = _now_local().hour
+    if hour < 12:
+        return "Bom dia"
+    if hour < 18:
+        return "Boa tarde"
+    return "Boa noite"
+
+
+def _kpi_header(card: dict[str, Any]) -> str:
+    """Format a compact KPI summary line for the briefing header."""
+    events_count = len(card.get("events_24h", []))
+    urgent_emails = len([
+        e for e in card.get("emails_scored", [])
+        if e.get("urgency") in {"urgente", "importante"}
+    ])
+    overdue = len(card.get("tasks_overdue", []))
+    due_soon = len(card.get("tasks_due_soon", []))
+    conflicts = len(card.get("calendar_conflicts", []))
+    approvals = len(card.get("pending_approvals", []))
+
+    parts: list[str] = []
+    if events_count:
+        parts.append(f"🗓 {events_count} evento{'s' if events_count != 1 else ''} hoje")
+    if urgent_emails:
+        parts.append(f"📧 {urgent_emails} e-mail{'s' if urgent_emails != 1 else ''} urgente{'s' if urgent_emails != 1 else ''}")
+    if overdue:
+        parts.append(f"⚠️ {overdue} tarefa{'s' if overdue != 1 else ''} vencida{'s' if overdue != 1 else ''}")
+    if due_soon:
+        parts.append(f"📋 {due_soon} vence{'m' if due_soon != 1 else ''} hoje")
+    if conflicts:
+        parts.append(f"⚡ {conflicts} conflito{'s' if conflicts != 1 else ''} de agenda")
+    if approvals:
+        parts.append(f"✅ {approvals} aprovação{'ões' if approvals != 1 else ''} pendente{'s' if approvals != 1 else ''}")
+    if not parts:
+        parts.append("✅ Dia tranquilo — sem urgências")
+    return " · ".join(parts)
+
+
+async def generate_briefing_insight(card: dict[str, Any]) -> str:
+    """Use gpt-4o-mini to generate a 2-sentence strategic insight from the context card."""
+    try:
+        from app.config import settings as _settings
+        from openai import AsyncOpenAI
+        api_key = _settings.openai_api_key
+        if not api_key:
+            return ""
+        client = AsyncOpenAI(api_key=api_key)
+
+        events = card.get("events_24h", [])
+        overdue = card.get("tasks_overdue", [])
+        urgent_emails = [e for e in card.get("emails_scored", []) if e.get("urgency") in {"urgente", "importante"}]
+        conflicts = card.get("calendar_conflicts", [])
+
+        ctx_parts: list[str] = []
+        if events:
+            ctx_parts.append("Eventos próximas 24h: " + ", ".join(e.get("title", "?") for e in events[:5]))
+        if overdue:
+            ctx_parts.append("Tarefas vencidas: " + ", ".join(t.get("title", "?") for t in overdue[:3]))
+        if urgent_emails:
+            ctx_parts.append("E-mails urgentes: " + ", ".join(e.get("subject", "?") for e in urgent_emails[:3]))
+        if conflicts:
+            ctx_parts.append(f"{len(conflicts)} conflito(s) de agenda detectado(s)")
+
+        if not ctx_parts:
+            return ""
+
+        context = "\n".join(ctx_parts)
+        prompt = (
+            "Você é Jarvis, assistente pessoal executivo.\n"
+            "Dado este contexto do dia do usuário:\n"
+            f"{context}\n\n"
+            "Escreva exatamente 2 frases em português:\n"
+            "1. Uma observação estratégica sobre o dia (risco, oportunidade ou padrão que o usuário talvez não perceba)\n"
+            "2. Uma recomendação concreta de ação prioritária\n"
+            "Seja direto e específico. Máximo 60 palavras total. Sem introduções como 'Com base em' ou 'Olhando para'."
+        )
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            temperature=0.4,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception:
+        return ""
+
+
+async def compose_briefing_on_demand(card: dict[str, Any]) -> str:
+    """Compose a rich, time-aware on-demand executive briefing with AI insight."""
+    now = _now_local()
+    greeting = _time_greeting()
+    weekday = _weekday_pt(now)
+    date_str = now.strftime("%d/%m · %H:%M")
+
+    kpi = _kpi_header(card)
+    insight = await generate_briefing_insight(card)
+
+    items = build_briefing_items(card)
+    critical = [i for i in items if i.severity == "critical"]
+    high = [i for i in items if i.severity == "high"]
+    moderate = [i for i in items if i.severity == "moderate"]
+
+    lines: list[str] = [
+        f"🤖 *{greeting}. Briefing — {weekday}, {date_str}*",
+        "",
+        f"_{kpi}_",
+        "",
+    ]
+
+    if insight:
+        lines += [f"💡 {insight}", ""]
+
+    def _append_section(title: str, section_items: list[BriefingItem], max_items: int) -> None:
+        if not section_items:
+            return
+        lines.append(f"*{title}*")
+        for item in section_items[:max_items]:
+            lines.append(f"• {item.title}")
+            lines.append(f"  ↳ {item.action}")
+        lines.append("")
+
+    _append_section("🔴 Crítico", critical, 3)
+    _append_section("🟠 Alta prioridade", high, 3)
+    _append_section("🟡 Atenção", moderate, 2)
+
+    agenda_lines = _agenda_deadline_lines(card)
+    if agenda_lines:
+        lines.append("*📅 Próximos prazos e eventos*")
+        lines.extend(agenda_lines[:5])
+        lines.append("")
+
+    actions = suggest_next_actions(card, limit=3)
+    if actions:
+        lines.append("*🎯 Top ações agora*")
+        for i, action in enumerate(actions, 1):
+            lines.append(f"{i}. {action}")
+        lines.append("")
+
+    lines += [
+        "*Atalhos*",
+        "• /focus · /myday · /inboxsummary · /approvals",
+    ]
+    return "\n".join(lines)
