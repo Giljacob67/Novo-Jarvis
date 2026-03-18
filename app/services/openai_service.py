@@ -612,10 +612,26 @@ def _runtime_capabilities_context() -> str:
     )
 
 
+SUMMARIZE_SYSTEM_PROMPT = """\
+Você é um assistente que comprime histórico de conversa em um resumo conciso em português.
+
+Seu trabalho:
+- Se houver um resumo existente, integre os novos fatos a ele (não descarte o antigo).
+- Capture: fatos sobre o usuário, decisões tomadas, projetos mencionados, preferências, \
+compromissos, contatos relevantes, ações concluídas.
+- Ignore: saudações, conversas triviais, confirmações simples.
+- Seja objetivo e factual. Sem frases desnecessárias.
+- Formato: parágrafo(s) corrido(s), máximo 300 palavras.
+- Escreva em 3ª pessoa sobre o usuário (ex: "O usuário tem reunião com João…").
+"""
+
+
 class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
         self._client_provider: str = ""
+        self._async_client: Any = None
+        self._async_client_provider: str = ""
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
@@ -653,6 +669,50 @@ class OpenAIService:
                 self._client = OpenAI(api_key=api_key)
             self._client_provider = provider
         return self._client
+
+    def _get_async_client(self) -> Any:
+        """AsyncOpenAI client used for background tasks (summarization, extraction)."""
+        api_key = settings.openai_api_key
+        if not api_key:
+            return None
+        if self._async_client is None or self._async_client_provider != "openai":
+            from openai import AsyncOpenAI
+            self._async_client = AsyncOpenAI(api_key=api_key)
+            self._async_client_provider = "openai"
+        return self._async_client
+
+    async def summarize_conversation(
+        self,
+        messages: list[dict[str, str]],
+        existing_summary: str | None = None,
+    ) -> str | None:
+        """Compress a batch of messages into a rolling summary string."""
+        client = self._get_async_client()
+        if client is None:
+            return None
+
+        convo_text = "\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in messages
+        )
+        user_content = ""
+        if existing_summary:
+            user_content += f"## Resumo existente\n{existing_summary}\n\n"
+        user_content += f"## Novas mensagens a incorporar\n{convo_text}"
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=500,
+                temperature=0,
+            )
+            return (response.choices[0].message.content or "").strip() or None
+        except Exception as exc:
+            logger.warning("summarize_conversation failed: %s", exc)
+            return None
 
     async def generate_reply(
         self,

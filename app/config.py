@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     context_max_messages: int = 20
     context_max_memories: int = 10
     message_profile: str = "executivo_interativo"
+    # History summarization — compresses old messages into a rolling summary
+    # to preserve context beyond the context_max_messages sliding window.
+    history_summarization_enabled: bool = True
+    history_summary_trigger: int = 25   # run when live messages exceed this
+    history_summary_batch: int = 15     # how many old messages to compress per run
     autonomy_default_mode: str = "hybrid_safe"
 
     telegram_bot_token: str = ""

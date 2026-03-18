@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -805,7 +806,10 @@ def _get_or_create_conversation(db: Session, user_id: str) -> Conversation:
 def _get_recent_messages(db: Session, conversation_id: int, limit: int) -> list[Message]:
     msgs = (
         db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
+        .filter(
+            Message.conversation_id == conversation_id,
+            Message.is_archived == False,  # noqa: E712 — SQLAlchemy requires ==
+        )
         .order_by(Message.created_at.desc())
         .limit(limit)
         .all()
@@ -923,6 +927,66 @@ def _save_message(db: Session, conversation_id: int, role: str, text: str, chann
     return msg
 
 
+async def _maybe_summarize_history(conv_id: int) -> None:
+    """Background task: compress oldest messages into rolling summary when threshold exceeded."""
+    if not settings.history_summarization_enabled:
+        return
+    try:
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            active_count = (
+                db.query(Message)
+                .filter(
+                    Message.conversation_id == conv_id,
+                    Message.is_archived == False,  # noqa: E712
+                )
+                .count()
+            )
+            if active_count <= settings.history_summary_trigger:
+                return
+
+            to_archive = (
+                db.query(Message)
+                .filter(
+                    Message.conversation_id == conv_id,
+                    Message.is_archived == False,  # noqa: E712
+                )
+                .order_by(Message.created_at.asc())
+                .limit(settings.history_summary_batch)
+                .all()
+            )
+            if not to_archive:
+                return
+
+            conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+            if not conv:
+                return
+
+            msg_dicts = [{"role": m.role, "content": m.text} for m in to_archive]
+            new_summary = await _openai_service.summarize_conversation(
+                messages=msg_dicts,
+                existing_summary=conv.summary_text,
+            )
+            if not new_summary:
+                return
+
+            conv.summary_text = new_summary
+            conv.summarized_up_to_id = to_archive[-1].id
+            for msg in to_archive:
+                msg.is_archived = True
+            db.commit()
+            logger.info(
+                "History summarized: %d messages archived for conv %d",
+                len(to_archive),
+                conv_id,
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Background summarization failed for conv %d", conv_id)
+
+
 async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dict | None = None, channel: str = "telegram") -> str:
     conv = _get_or_create_conversation(db, user_id)
     state = conversation_state_service.update_state_from_text(db, user_id, text)
@@ -936,6 +1000,18 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
 
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
+
+    # Inject rolling summary as the first context message when available
+    if conv.summary_text:
+        history = [
+            {
+                "role": "system",
+                "content": (
+                    "## Contexto de conversas anteriores (resumo comprimido)\n"
+                    + conv.summary_text
+                ),
+            }
+        ] + history
 
     if _is_alert_dismiss_intent(augmented_text):
         subject = _extract_latest_critical_alert_subject(recent[:-1])
@@ -1014,6 +1090,9 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
             logger.exception("Failed to apply executive response composer")
 
     _save_message(db, conv.id, role="assistant", text=reply)
+
+    if settings.history_summarization_enabled:
+        asyncio.create_task(_maybe_summarize_history(conv.id))
 
     return reply
 
