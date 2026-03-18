@@ -50,7 +50,7 @@ def _effective_model() -> str:
 
 def _get_llm_client() -> tuple[Any | None, str]:
     from app.config import settings
-    from openai import OpenAI
+    from openai import AsyncOpenAI
 
     provider = _effective_provider()
     if provider == "openrouter":
@@ -65,9 +65,9 @@ def _get_llm_client() -> tuple[Any | None, str]:
         headers: dict[str, str] = {"X-Title": "Jarvis Pessoal"}
         if settings.effective_base_url:
             headers["HTTP-Referer"] = settings.effective_base_url
-        return OpenAI(api_key=api_key, base_url=settings.openrouter_base_url, default_headers=headers), provider
+        return AsyncOpenAI(api_key=api_key, base_url=settings.openrouter_base_url, default_headers=headers), provider
 
-    return OpenAI(api_key=api_key), provider
+    return AsyncOpenAI(api_key=api_key), provider
 
 
 def _decode_text(data: bytes) -> str:
@@ -121,7 +121,7 @@ def _extract_response_text(response: Any) -> str:
     return final_text.strip()
 
 
-def _summarize_with_llm(title: str, text: str, focus: str | None = None) -> str:
+async def _summarize_with_llm(title: str, text: str, focus: str | None = None) -> str:
     client, provider = _get_llm_client()
     if client is None:
         return (
@@ -144,7 +144,7 @@ def _summarize_with_llm(title: str, text: str, focus: str | None = None) -> str:
 
     try:
         if provider == "openrouter":
-            resp = client.chat.completions.create(
+            resp = await client.chat.completions.create(
                 model=_effective_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -160,7 +160,7 @@ def _summarize_with_llm(title: str, text: str, focus: str | None = None) -> str:
                 )
             return str(content).strip() or "Não consegui gerar o resumo."
 
-        resp = client.responses.create(
+        resp = await client.responses.create(
             model=_effective_model(),
             input=[
                 {"role": "system", "content": system_prompt},
@@ -213,7 +213,7 @@ async def summarize_file(db: Session, user_id: str, file_id: str, focus: str | N
     if not text or not text.strip():
         return {"error": "Não consegui extrair texto útil desse arquivo.", "file": file_item}
 
-    summary = _summarize_with_llm(file_name, text, focus=focus)
+    summary = await _summarize_with_llm(file_name, text, focus=focus)
     return {
         "file": file_item,
         "summary": summary,

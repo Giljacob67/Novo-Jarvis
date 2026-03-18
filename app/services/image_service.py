@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 def _get_openai_client():
-    from openai import OpenAI
-    return OpenAI(api_key=settings.openai_api_key)
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
 def _extract_response_text(response: Any) -> str:
@@ -34,7 +34,7 @@ async def extract_text_from_image_bytes(image_bytes: bytes) -> dict[str, Any]:
         client = _get_openai_client()
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:image/jpeg;base64,{image_b64}"
-        response = client.responses.create(
+        response = await client.responses.create(
             model=settings.openai_vision_model,
             input=[
                 {

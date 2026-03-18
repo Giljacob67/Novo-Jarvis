@@ -616,6 +616,8 @@ class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
         self._client_provider: str = ""
+        self._async_client: Any = None
+        self._async_client_provider: str = ""
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
@@ -654,6 +656,39 @@ class OpenAIService:
             self._client_provider = provider
         return self._client
 
+    def _get_async_client(self) -> Any:
+        """Returns an AsyncOpenAI client for the configured LLM provider.
+
+        Mirrors _get_client() but uses AsyncOpenAI so every LLM call can be
+        properly awaited, keeping the FastAPI event loop unblocked.
+        """
+        provider = self._effective_provider()
+        if provider == "openrouter":
+            api_key = settings.openrouter_api_key or settings.openai_api_key
+        else:
+            api_key = settings.openai_api_key
+
+        if not api_key:
+            return None
+
+        if self._async_client is None or self._async_client_provider != provider:
+            from openai import AsyncOpenAI
+            if provider == "openrouter":
+                headers: dict[str, str] = {
+                    "X-Title": "Jarvis Pessoal",
+                }
+                if settings.effective_base_url:
+                    headers["HTTP-Referer"] = settings.effective_base_url
+                self._async_client = AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=settings.openrouter_base_url,
+                    default_headers=headers,
+                )
+            else:
+                self._async_client = AsyncOpenAI(api_key=api_key)
+            self._async_client_provider = provider
+        return self._async_client
+
     async def generate_reply(
         self,
         user_id: str,
@@ -663,7 +698,7 @@ class OpenAIService:
         tool_executor: Any = None,
         db: Any = None,
     ) -> str:
-        client = self._get_client()
+        client = self._get_async_client()
         if client is None:
             return (
                 "A integração de LLM ainda não foi configurada. "
@@ -702,7 +737,7 @@ class OpenAIService:
                 }
                 if round_num < max_rounds:
                     kwargs["tools"] = TOOLS
-                response = client.responses.create(**kwargs)
+                response = await client.responses.create(**kwargs)
             except Exception as e:
                 logger.exception("OpenAI API error: %s", e)
                 return "Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em instantes."
@@ -766,7 +801,7 @@ class OpenAIService:
                 }
                 if round_num < max_rounds:
                     kwargs["tools"] = CHAT_TOOLS
-                response = client.chat.completions.create(**kwargs)
+                response = await client.chat.completions.create(**kwargs)
             except Exception as e:
                 logger.exception("OpenRouter/OpenAI-compatible API error: %s", e)
                 return "Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em instantes."

@@ -15,11 +15,11 @@ VOICE_PREF_KEY = "voice_reply_enabled"
 
 
 def _get_openai_client():
-    from openai import OpenAI
+    from openai import AsyncOpenAI
     kwargs: dict[str, Any] = {"api_key": settings.audio_api_key}
     if settings.audio_base_url.strip():
         kwargs["base_url"] = settings.audio_base_url.strip()
-    return OpenAI(**kwargs)
+    return AsyncOpenAI(**kwargs)
 
 
 def is_audio_configured() -> bool:
@@ -44,7 +44,7 @@ async def transcribe_file(file_path: str, language: str = "pt") -> dict[str, Any
     try:
         client = _get_openai_client()
         with open(file_path, "rb") as audio_file:
-            response = client.audio.transcriptions.create(
+            response = await client.audio.transcriptions.create(
                 model=settings.openai_transcribe_model,
                 file=audio_file,
                 language=language,
@@ -85,7 +85,7 @@ async def synthesize_speech(text: str, voice: str | None = None, output_format: 
 
     try:
         client = _get_openai_client()
-        response = client.audio.speech.create(
+        response = await client.audio.speech.create(
             model=settings.openai_tts_model,
             voice=voice,
             input=text,
