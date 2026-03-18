@@ -91,6 +91,8 @@ HELP_TEXT = (
     "/voiceon — ativar respostas por áudio\n"
     "/voiceoff — desativar respostas por áudio\n"
     "/voicestatus — status das respostas por áudio\n"
+    "/voiceset <voz> — escolher voz TTS (alloy, echo, fable, onyx, nova, shimmer)\n"
+    "/voicetest — testar voz TTS atual com áudio de exemplo\n"
     "🌐 Browser (automação supervisionada):\n"
     "/browserstart <url> — iniciar sessão de browser\n"
     "/browserstatus — status da sessão ativa\n"
@@ -393,11 +395,16 @@ async def _handle_voice_message(
         if not transcription.strip():
             return "🎤 Recebi seu áudio, mas a transcrição ficou vazia. Pode tentar novamente ou enviar em texto?"
 
-        reply_text = await handle_free_text(
-            db, user_id, transcription,
-            raw_update={"voice_log_id": voice_log.id, "source_type": source_type, "file_id": file_id, "duration": duration},
-            channel="telegram_voice",
-        )
+        # Natural voice command detection: "mostra minhas tarefas" → /tasks
+        voice_cmd = audio_service.detect_voice_command(transcription)
+        if voice_cmd:
+            reply_text = await _route_command(db, user_id, chat_id, voice_cmd, {})
+        else:
+            reply_text = await handle_free_text(
+                db, user_id, transcription,
+                raw_update={"voice_log_id": voice_log.id, "source_type": source_type, "file_id": file_id, "duration": duration},
+                channel="telegram_voice",
+            )
 
         voice_log.processing_status = "completed"
         db.commit()
@@ -426,7 +433,7 @@ async def _handle_voice_message(
 
 
 async def _send_voice_reply(db: Session, chat_id: int, text: str, user_id: str) -> bool:
-    tts_result = await audio_service.synthesize_speech(text)
+    tts_result = await audio_service.synthesize_speech_for_voice(db, user_id, text)
     if tts_result.get("error") or not tts_result.get("audio_bytes"):
         logger.warning("TTS failed, skipping voice reply: %s", tts_result.get("error"))
         return False
@@ -770,6 +777,10 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
     if text.startswith("/proactivestatus"):
         return _cmd_proactive_status(db, user_id)
 
+    if text.startswith("/voiceset"):
+        return _cmd_voiceset(db, user_id, text)
+    if text.startswith("/voicetest"):
+        return await _cmd_voicetest(db, user_id, chat_id)
     if text.startswith("/voiceon"):
         audio_service.set_voice_preference(db, user_id, True)
         if not audio_service.is_audio_configured():
@@ -891,6 +902,42 @@ async def _cmd_briefingnow(db: Session, user_id: str) -> str:
 
 async def _cmd_checkin(db: Session, user_id: str) -> str:
     return await proactive_service.generate_midday_checkin(db, user_id)
+
+
+def _cmd_voiceset(db: Session, user_id: str, text: str) -> str:
+    voice = text[len("/voiceset"):].strip().lower()
+    if not voice:
+        current = audio_service.get_tts_voice(db, user_id)
+        voices = ", ".join(sorted(audio_service.VALID_TTS_VOICES))
+        return (
+            f"🎙️ Voz TTS atual: *{current}*\n\n"
+            f"Vozes disponíveis: {voices}\n"
+            f"Use `/voiceset <voz>` para trocar.\n"
+            f"Use `/voicetest` para ouvir a voz atual."
+        )
+    ok = audio_service.set_tts_voice(db, user_id, voice)
+    if not ok:
+        voices = ", ".join(sorted(audio_service.VALID_TTS_VOICES))
+        return f"❌ Voz inválida: `{voice}`\n\nVozes disponíveis: {voices}"
+    return f"✅ Voz TTS atualizada para *{voice}*. Use `/voicetest` para testar."
+
+
+async def _cmd_voicetest(db: Session, user_id: str, chat_id: int) -> str:
+    if not audio_service.is_audio_configured():
+        return "❌ API de áudio não configurada (OPENAI_API_KEY ausente)."
+    voice = audio_service.get_tts_voice(db, user_id)
+    sample = (
+        f"Olá! Aqui é o Jarvis. Sua voz atual é {voice}. "
+        "Pronto para ajudar com sua agenda, e-mails e muito mais."
+    )
+    tts_result = await audio_service.synthesize_speech(sample, voice=voice)
+    if tts_result.get("error") or not tts_result.get("audio_bytes"):
+        return f"❌ Erro ao gerar áudio: {tts_result.get('error')}"
+    try:
+        await telegram_service.send_voice(chat_id, tts_result["audio_bytes"])
+        return ""  # audio already sent
+    except Exception:
+        return f"⚠️ Voz *{voice}* gerada mas não foi possível enviar. Tente novamente."
 
 
 async def _cmd_focus(db: Session, user_id: str) -> str:
