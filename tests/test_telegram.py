@@ -244,6 +244,50 @@ def test_telegram_news_query_without_browser_is_deterministic(client: TestClient
             app_settings.browser_allowed_domains = old_domains
 
 
+def test_telegram_news_query_with_browser_enabled_requires_url(client: TestClient, _patch_telegram_send) -> None:
+    from app.config import settings as app_settings
+
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
+        old_enabled = app_settings.browser_automation_enabled
+        old_domains = app_settings.browser_allowed_domains
+        try:
+            app_settings.browser_automation_enabled = True
+            app_settings.browser_allowed_domains = "g1.globo.com,bbc.com"
+            payload = _make_payload(154, text="Jarvis, quais são as principais notícias do dia?")
+            response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+            assert response.status_code == 200
+            sent_text = _patch_telegram_send.call_args[0][1].lower()
+            assert "preciso de uma fonte" in sent_text
+            assert "domínios permitidos" in sent_text or "dominios permitidos" in sent_text
+            mock_gen.assert_not_called()
+        finally:
+            app_settings.browser_automation_enabled = old_enabled
+            app_settings.browser_allowed_domains = old_domains
+
+
+@patch("app.services.workflow_service.run_workflow", new_callable=AsyncMock)
+def test_telegram_news_query_with_url_uses_workflow(mock_run_workflow, client: TestClient, _patch_telegram_send) -> None:
+    from app.config import settings as app_settings
+
+    with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
+        old_enabled = app_settings.browser_automation_enabled
+        old_domains = app_settings.browser_allowed_domains
+        try:
+            app_settings.browser_automation_enabled = True
+            app_settings.browser_allowed_domains = "g1.globo.com"
+            mock_run_workflow.return_value = "🔍 *Workflow: Website Research*"
+            payload = _make_payload(155, text="pesquise nesta url https://g1.globo.com")
+            response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+            assert response.status_code == 200
+            sent_text = _patch_telegram_send.call_args[0][1]
+            assert "Website Research" in sent_text
+            mock_run_workflow.assert_awaited_once()
+            mock_gen.assert_not_called()
+        finally:
+            app_settings.browser_automation_enabled = old_enabled
+            app_settings.browser_allowed_domains = old_domains
+
+
 def test_telegram_myday_does_not_call_openai(client: TestClient, _patch_telegram_send) -> None:
     with patch("app.services.assistant_service._openai_service.generate_reply", new_callable=AsyncMock) as mock_gen:
         payload = _make_payload(15, text="/myday")

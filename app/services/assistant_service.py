@@ -825,7 +825,8 @@ def _is_news_or_web_search_intent(text: str) -> bool:
         for k in [
             "notícia", "noticias", "news", "busque notícias", "buscar notícias",
             "pesquise na internet", "procure na internet", "pesquise no google",
-            "busque na web", "pesquisar sobre",
+            "busque na web", "pesquisar sobre", "manchetes", "headlines",
+            "principais notícias", "principais noticias", "notícias do dia", "noticias do dia",
         ]
     )
 
@@ -839,6 +840,39 @@ def _looks_like_web_offer(text: str) -> bool:
     t = (text or "").lower()
     return bool(
         re.search(r"(acessar a internet|usar o google|pesquisar por você|quer que eu faça)", t)
+    )
+
+
+def _extract_first_url(text: str) -> str | None:
+    match = re.search(r"https?://[^\s<>()]+", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:")
+
+
+async def _handle_web_research_intent(db: Session, user_id: str, text: str) -> str:
+    if not _browser_access_effective():
+        return (
+            "No momento, a navegação web não está ativa aqui. "
+            "Se quiser, o administrador pode habilitar browser supervisionado (domínios permitidos)."
+        )
+
+    url = _extract_first_url(text)
+    if url:
+        from app.services import workflow_service
+
+        result = await workflow_service.run_workflow(db, user_id, "website_research", [url])
+        if isinstance(result, str):
+            return result
+        return "❌ Não consegui concluir a pesquisa nessa URL."
+
+    allowed_domains = [d.strip() for d in settings.browser_allowed_domains.split(",") if d.strip()]
+    domains_preview = ", ".join(allowed_domains[:5]) if allowed_domains else "nenhum"
+    return (
+        "Consigo pesquisar na web supervisionada, mas preciso de uma fonte (URL) para te trazer manchetes reais.\n"
+        f"Domínios permitidos agora: {domains_preview}\n"
+        "Me envie um link e eu pesquiso em seguida.\n"
+        "Exemplo: /webresearch https://g1.globo.com"
     )
 
 
@@ -870,15 +904,16 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
     recent = _get_recent_messages(db, conv.id, settings.context_max_messages)
     history = format_history_context(recent[:-1])
 
+    if _is_news_or_web_search_intent(augmented_text):
+        web_reply = await _handle_web_research_intent(db, user_id, augmented_text)
+        _save_message(db, conv.id, role="assistant", text=web_reply)
+        return web_reply
+
     if not _browser_access_effective():
         fallback_reply = (
             "No momento, a navegação web não está ativa aqui. "
             "Se quiser, o administrador pode habilitar browser supervisionado (domínios permitidos)."
         )
-        if _is_news_or_web_search_intent(augmented_text):
-            _save_message(db, conv.id, role="assistant", text=fallback_reply)
-            return fallback_reply
-
         if _is_affirmative(augmented_text):
             prev_assistant = next((m for m in reversed(recent[:-1]) if m.role == "assistant"), None)
             if prev_assistant and _looks_like_web_offer(prev_assistant.text):
