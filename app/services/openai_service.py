@@ -612,6 +612,30 @@ def _runtime_capabilities_context() -> str:
     )
 
 
+PROFILE_EXTRACTION_PROMPT = """\
+Analise o turno de conversa e extraia APENAS informações que enriquecem o \
+perfil pessoal do usuário (não do assistente).
+
+Retorne JSON com apenas os campos onde há informação nova e confiável:
+{
+  "name": "nome completo do usuário se mencionado explicitamente",
+  "company": "empresa ou organização do usuário",
+  "role": "cargo ou papel profissional do usuário",
+  "projects": [{"name": "nome do projeto", "status": "ativo"}],
+  "contacts": [{"name": "nome", "role": "papel/relação", "company": "empresa"}],
+  "preferences": ["preferência expressa pelo usuário"],
+  "patterns": {"typical_start": "HH:MM", "focus_areas": ["área de foco"]}
+}
+
+REGRAS:
+- Inclua apenas campos com dados concretos desta conversa
+- NÃO inclua inferências, suposições ou dados já óbvios
+- Contatos: apenas pessoas EXTERNAS ao usuário (clientes, parceiros, colegas)
+- Se não há dados de perfil neste turno: {"facts": []}
+- Responda sempre em português do Brasil
+"""
+
+
 class OpenAIService:
     def __init__(self) -> None:
         self._client: Any = None
@@ -654,6 +678,46 @@ class OpenAIService:
             self._client_provider = provider
         return self._client
 
+    async def extract_profile_updates(
+        self,
+        user_message: str,
+        assistant_reply: str,
+    ) -> dict:
+        """Extract structured profile facts from a conversation turn.
+
+        Returns a partial profile dict suitable for deep-merging into the
+        existing UserProfile.  Returns {} on failure or when no relevant
+        profile data is found in this turn.
+        """
+        client = self._get_async_client()
+        if client is None:
+            return {}
+        prompt = (
+            f"Usuário disse: {user_message[:600]}\n\n"
+            f"Assistente respondeu: {assistant_reply[:400]}"
+        )
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": PROFILE_EXTRACTION_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=400,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content or "{}"
+            data = json.loads(raw)
+            # Handle both {"name": ...} and {"facts": [...]} responses
+            if "facts" in data and not any(k != "facts" for k in data):
+                return {}
+            # Remove empty / null values before returning
+            return {k: v for k, v in data.items() if v and v != [] and v != {}}
+        except Exception as e:
+            logger.warning("extract_profile_updates failed: %s", e)
+            return {}
+
     async def generate_reply(
         self,
         user_id: str,
@@ -662,6 +726,7 @@ class OpenAIService:
         memories: list,
         tool_executor: Any = None,
         db: Any = None,
+        profile_context: str = "",
     ) -> str:
         client = self._get_client()
         if client is None:
@@ -672,6 +737,9 @@ class OpenAIService:
             )
 
         system_content = SYSTEM_PROMPT
+        # Inject user profile immediately after the base prompt (highest prominence)
+        if profile_context:
+            system_content += f"\n\n{profile_context}"
         mem_ctx = format_memories_context(memories)
         if mem_ctx:
             system_content += f"\n\n{mem_ctx}"

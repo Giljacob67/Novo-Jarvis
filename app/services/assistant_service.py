@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ from app.models.action_log import ActionLog
 from app.prompts import format_history_context
 from app.services.memory_service import save_memory, list_memories
 from app.services.openai_service import OpenAIService
+from app.services import profile_service
 from app.services import google_oauth_service
 from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
@@ -982,6 +984,10 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
             *memories,
         ]
 
+    # Build user profile context — injected into system prompt for personal awareness
+    profile = profile_service.get_profile(db, user_id)
+    user_profile_context = profile_service.format_profile_context(profile)
+
     if (text or "").strip().lower() in {"resolve isso", "faça isso", "faz isso"}:
         card = await executive_service.build_context_card(db, user_id)
         actions = executive_service.suggest_next_actions(card, limit=3)
@@ -1004,6 +1010,7 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
         memories=memories,
         tool_executor=tool_executor,
         db=db,
+        profile_context=user_profile_context,
     )
 
     if settings.message_profile == "executivo_interativo":
@@ -1015,7 +1022,32 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
 
     _save_message(db, conv.id, role="assistant", text=reply)
 
+    # Background: extract and update user profile from this conversation turn
+    asyncio.create_task(
+        _update_profile_background(user_id=user_id, user_message=text, assistant_reply=reply)
+    )
+
     return reply
+
+
+async def _update_profile_background(user_id: str, user_message: str, assistant_reply: str) -> None:
+    """Background task — extracts profile facts and deep-merges into UserProfile.
+
+    Opens its own DB session, catches all exceptions silently.
+    Does not block the response path.
+    """
+    try:
+        updates = await _openai_service.extract_profile_updates(user_message, assistant_reply)
+        if not updates:
+            return
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            profile_service.upsert_profile(db, user_id, updates)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("_update_profile_background failed silently for user=%s", user_id)
 
 
 def format_day_overview_text(overview: DayOverview) -> str:
