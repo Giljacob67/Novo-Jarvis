@@ -21,8 +21,6 @@ from app.models.voice_message_log import VoiceMessageLog
 from app.services import telegram_service
 from app.services.assistant_service import (
     handle_free_text,
-    get_real_or_mock_day_overview,
-    format_day_overview_text,
     _get_or_create_conversation,
 )
 from app.services.memory_service import save_memory, list_memories
@@ -33,6 +31,8 @@ from app.services import google_gmail_service
 from app.services import google_drive_service
 from app.services import image_service
 from app.services import audio_service
+from app.services import autonomy_service
+from app.services import executive_service
 from app.services import approval_service
 from app.services import proactive_service
 from app.services import workflow_service
@@ -48,6 +48,9 @@ HELP_TEXT = (
     "Comandos disponíveis:\n"
     "/myday — resumo do dia\n"
     "/briefing — briefing matinal\n"
+    "/briefingnow — briefing executivo agora\n"
+    "/checkin — checkpoint executivo de meio-dia\n"
+    "/focus — top 3 prioridades agora\n"
     "/review — fechamento do dia\n"
     "/remember <texto> — salvar uma anotação\n"
     "/memories — listar anotações recentes\n"
@@ -81,6 +84,8 @@ HELP_TEXT = (
     "/quieton — ativar quiet hours\n"
     "/quietoff — desativar quiet hours\n"
     "/quietstatus — status do quiet hours\n"
+    "/autonomy [conservative|hybrid_safe|aggressive] — ver/ajustar autonomia\n"
+    "/proactivestatus — status das rotinas e gatilhos proativos\n"
     "/voiceon — ativar respostas por áudio\n"
     "/voiceoff — desativar respostas por áudio\n"
     "/voicestatus — status das respostas por áudio\n"
@@ -471,12 +476,14 @@ def _get_routine_status(db: Session, user_id: str) -> str:
     config_map = {c.routine_type: c.is_enabled for c in configs}
 
     morning = config_map.get("morning", settings.morning_briefing_enabled)
+    midday = config_map.get("midday", settings.midday_checkin_enabled)
     evening = config_map.get("evening", settings.evening_review_enabled)
     reminders = config_map.get("reminders", True)
 
     lines = [
         "⚙️ *Status das rotinas:*",
         f"  ☀️ Briefing matinal: {'✅ ativo' if morning else '❌ desativado'} ({settings.morning_briefing_time})",
+        f"  🕐 Checkpoint meio-dia: {'✅ ativo' if midday else '❌ desativado'} ({settings.midday_checkin_time})",
         f"  🌙 Fechamento do dia: {'✅ ativo' if evening else '❌ desativado'} ({settings.evening_review_time})",
         f"  🔔 Lembretes: {'✅ ativo' if reminders else '❌ desativado'}",
         f"  🤖 Proativo global: {'✅' if settings.proactive_features_enabled else '❌'}",
@@ -502,7 +509,12 @@ def _set_routine(db: Session, user_id: str, routine_type: str, enabled: bool) ->
     db.commit()
 
     status = "ativada" if enabled else "desativada"
-    labels = {"morning": "☀️ Briefing matinal", "evening": "🌙 Fechamento do dia", "reminders": "🔔 Lembretes"}
+    labels = {
+        "morning": "☀️ Briefing matinal",
+        "midday": "🕐 Checkpoint meio-dia",
+        "evening": "🌙 Fechamento do dia",
+        "reminders": "🔔 Lembretes",
+    }
     label = labels.get(routine_type, routine_type)
     return f"✅ Rotina {label} {status}."
 
@@ -687,6 +699,12 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
 
     if text.startswith("/myday"):
         return await _cmd_myday(db, user_id)
+    if text.startswith("/briefingnow"):
+        return await _cmd_briefingnow(db, user_id)
+    if text.startswith("/checkin"):
+        return await _cmd_checkin(db, user_id)
+    if text.startswith("/focus"):
+        return await _cmd_focus(db, user_id)
     if text.startswith("/briefing"):
         return await _cmd_briefing(db, user_id)
     if text.startswith("/review"):
@@ -743,6 +761,10 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
             f"  Resultado: {'🌙 quiet hours ativas' if active else '🔔 mensagens a qualquer hora'}",
         ]
         return "\n".join(lines)
+    if text.startswith("/autonomy"):
+        return _cmd_autonomy(db, user_id, text)
+    if text.startswith("/proactivestatus"):
+        return _cmd_proactive_status(db, user_id)
 
     if text.startswith("/voiceon"):
         audio_service.set_voice_preference(db, user_id, True)
@@ -847,38 +869,71 @@ async def _route_command(db: Session, user_id: str, chat_id: int, text: str, bod
 
 
 async def _cmd_myday(db: Session, user_id: str) -> str:
-    overview = await get_real_or_mock_day_overview(db, user_id)
-    base_text = format_day_overview_text(overview)
-
-    extras = []
-    pending = approval_service.list_pending_approvals(db, user_id)
-    if pending:
-        extras.append(f"\n⏳ *{len(pending)} aprovação(ões) pendente(s)* — use /approvals")
-
-    suggestions = await proactive_service.get_proactive_suggestions(db, user_id)
-    if suggestions.get("suggestions"):
-        extras.append("\n💡 *Alertas:*")
-        for s in suggestions["suggestions"][:5]:
-            extras.append(f"  {s}")
-
-    from app.services.memory_service import get_memories_by_context
-    followups = get_memories_by_context(db, user_id, ["followup"], limit=3)
-    if followups:
-        extras.append("\n📌 *Follow-ups:*")
-        for m in followups:
-            extras.append(f"  • {m.content[:80]}")
-
-    if extras:
-        base_text += "\n".join(extras)
-    return base_text
+    card = await executive_service.build_context_card(db, user_id)
+    return executive_service.compose_executive_message(
+        "Resumo Executivo do Dia",
+        card,
+        shortcuts=["/focus", "/checkin", "/approvals"],
+    )
 
 
 async def _cmd_briefing(db: Session, user_id: str) -> str:
     return await proactive_service.generate_morning_briefing(db, user_id)
 
 
+async def _cmd_briefingnow(db: Session, user_id: str) -> str:
+    return await proactive_service.generate_morning_briefing(db, user_id)
+
+
+async def _cmd_checkin(db: Session, user_id: str) -> str:
+    return await proactive_service.generate_midday_checkin(db, user_id)
+
+
+async def _cmd_focus(db: Session, user_id: str) -> str:
+    card = await executive_service.build_context_card(db, user_id)
+    return executive_service.compose_focus_message(card)
+
+
 async def _cmd_review(db: Session, user_id: str) -> str:
     return await proactive_service.generate_evening_review(db, user_id)
+
+
+def _cmd_autonomy(db: Session, user_id: str, text: str) -> str:
+    raw = text[len("/autonomy"):].strip().lower()
+    if raw:
+        mode = autonomy_service.set_user_autonomy_mode(db, user_id, raw)
+    else:
+        mode = autonomy_service.get_user_autonomy_mode(db, user_id)
+
+    matrix = autonomy_service.autonomy_matrix(mode)
+    lines = [
+        f"🤖 *Autonomia atual:* `{mode}`",
+        f"• Baixo risco: {matrix['baixo_risco']}",
+        f"• Sensível: {matrix['sensivel']}",
+        f"• Crítico: {matrix['critico']}",
+        "",
+        "Para alterar: /autonomy conservative | /autonomy hybrid_safe | /autonomy aggressive",
+    ]
+    return "\n".join(lines)
+
+
+def _cmd_proactive_status(db: Session, user_id: str) -> str:
+    st = proactive_service.get_proactive_status(db, user_id)
+    lines = [
+        "📡 *Status Proativo*",
+        f"Agora: {st['now']}",
+        f"Morning: {'✅' if st['morning_enabled'] else '❌'} ({st['morning_time']}) próximo {st['morning_next']}",
+        f"Check-in: {'✅' if st['midday_enabled'] else '❌'} ({st['midday_time']}) próximo {st['midday_next']}",
+        f"Evening: {'✅' if st['evening_enabled'] else '❌'} ({st['evening_time']}) próximo {st['evening_next']}",
+        f"Gatilhos event-driven: {'✅' if st['event_triggers_enabled'] else '❌'}",
+        f"Limite diário por categoria: {st['daily_limit_per_category']}",
+        f"Quiet hours: {st['quiet_hours']}",
+        "",
+        "Envios hoje por categoria:",
+    ]
+    for cat, count in st["daily_counts"].items():
+        lines.append(f"• {cat}: {count}")
+    return "\n".join(lines)
 
 
 def _cmd_approvals(db: Session, user_id: str) -> str:
@@ -939,7 +994,7 @@ async def _cmd_runworkflow(db: Session, user_id: str, text: str) -> str:
 def _cmd_routine_toggle(db: Session, user_id: str, text: str, enabled: bool) -> str:
     cmd = "/routineon" if enabled else "/routineoff"
     routine_type = text[len(cmd):].strip().lower()
-    valid = ["morning", "evening", "reminders"]
+    valid = ["morning", "midday", "evening", "reminders"]
     if routine_type not in valid:
         return f"Use: {cmd} <{'|'.join(valid)}>"
     return _set_routine(db, user_id, routine_type, enabled)
@@ -979,6 +1034,8 @@ def _cmd_google_status(db: Session, user_id: str) -> str:
             reply += "\n\n⚠️ Gmail não autorizado. Use /connectgoogle para reconectar com escopos de Gmail."
         if not status.get("drive_enabled"):
             reply += "\n⚠️ Drive não autorizado. Use /connectgoogle para reconectar com escopo de Drive."
+        mode = autonomy_service.get_user_autonomy_mode(db, user_id)
+        reply += f"\n\nPerfil: {settings.message_profile} | Autonomia: {mode}"
         return reply
     return "❌ Conta Google não conectada. Use /connectgoogle para conectar."
 
@@ -990,8 +1047,24 @@ async def _cmd_tasks(db: Session, user_id: str) -> str:
     tasks = await google_tasks_service.list_tasks(db, user_id, limit=15)
     if not tasks:
         return "✅ Nenhuma tarefa pendente!"
-    lines = ["📋 Suas tarefas pendentes:"]
-    for i, t in enumerate(tasks, 1):
+    today = datetime.now().date().isoformat()
+    overdue = []
+    due_soon = []
+    no_due = []
+    for t in tasks:
+        due = (t.get("due") or "")[:10]
+        if due and due < today:
+            overdue.append(t)
+        elif due:
+            due_soon.append(t)
+        else:
+            no_due.append(t)
+    ordered = overdue + due_soon + no_due
+
+    lines = ["📋 *Tarefas priorizadas:*"]
+    if overdue:
+        lines.append(f"⚠️ {len(overdue)} vencida(s).")
+    for i, t in enumerate(ordered, 1):
         due_str = f" (vence: {t['due'][:10]})" if t.get("due") else ""
         lines.append(f"{i}. {t['title']}{due_str}")
     return "\n".join(lines)
@@ -1069,10 +1142,22 @@ async def _cmd_inboxsummary(db: Session, user_id: str) -> str:
     gmail_err = _gmail_not_ready_msg(db, user_id)
     if gmail_err:
         return gmail_err
-    result = await google_gmail_service.summarize_inbox(db, user_id)
-    if "error" in result:
-        return f"❌ {result['error']}"
-    return result.get("summary", "Não foi possível gerar o resumo.")
+    card = await executive_service.build_context_card(db, user_id)
+    emails = card.get("emails_scored", [])
+    if not emails:
+        return "📭 Sem e-mails relevantes no momento."
+
+    lines = ["📬 *Inbox executiva*"]
+    for i, e in enumerate(emails[:6], 1):
+        urgency = e.get("urgency", "informativo")
+        subject = e.get("subject", "(sem assunto)")
+        sender = e.get("from", "desconhecido")
+        reason = e.get("reason", "")
+        icon = {"urgente": "🔴", "importante": "🟠", "informativo": "🟡", "ruído": "⚪"}.get(urgency, "🟡")
+        lines.append(f"{i}. {icon} {subject} — {sender}")
+        lines.append(f"   motivo: {reason}")
+    lines.append("\nAtalhos: /emailsearch is:unread | /drafts")
+    return "\n".join(lines)
 
 
 async def _cmd_drive(db: Session, user_id: str) -> str:

@@ -14,6 +14,7 @@ from app.models.routine_execution_log import RoutineExecutionLog
 from app.models.browser_session import BrowserSession
 from app.models.browser_step_log import BrowserStepLog
 from app.models.browser_artifact import BrowserArtifact
+from app.models.conversation_state import ConversationState
 
 __all__ = [
     "User",
@@ -32,4 +33,5 @@ __all__ = [
     "BrowserSession",
     "BrowserStepLog",
     "BrowserArtifact",
+    "ConversationState",
 ]

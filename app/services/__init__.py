@@ -6,6 +6,9 @@ from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
 from app.services import google_drive_service
+from app.services import executive_service
+from app.services import autonomy_service
+from app.services import conversation_state_service
 
 telegram_service = TelegramService(bot_token=settings.telegram_bot_token)
 
@@ -18,4 +21,7 @@ __all__ = [
     "google_tasks_service",
     "google_gmail_service",
     "google_drive_service",
+    "executive_service",
+    "autonomy_service",
+    "conversation_state_service",
 ]

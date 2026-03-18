@@ -109,7 +109,7 @@ def test_telegram_myday_command(client: TestClient, _patch_telegram_send) -> Non
     response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
     assert response.status_code == 200
     call_text = _patch_telegram_send.call_args[0][1]
-    assert "Agenda" in call_text or "agenda" in call_text.lower()
+    assert "Prioridades" in call_text
 
 
 def test_telegram_remember_command(client: TestClient, _patch_telegram_send, db_session) -> None:
@@ -241,8 +241,32 @@ def test_telegram_myday_does_not_call_openai(client: TestClient, _patch_telegram
         response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
         assert response.status_code == 200
         call_text = _patch_telegram_send.call_args[0][1]
-        assert "Agenda" in call_text or "agenda" in call_text.lower()
+        assert "Prioridades" in call_text
         mock_gen.assert_not_called()
+
+
+def test_telegram_focus_command(client: TestClient, _patch_telegram_send) -> None:
+    payload = _make_payload(150, text="/focus")
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "Top 3 focos" in sent_text
+
+
+def test_telegram_autonomy_command(client: TestClient, _patch_telegram_send) -> None:
+    payload = _make_payload(151, text="/autonomy hybrid_safe")
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "Autonomia atual" in sent_text
+
+
+def test_telegram_proactive_status_command(client: TestClient, _patch_telegram_send) -> None:
+    payload = _make_payload(152, text="/proactivestatus")
+    response = client.post("/webhooks/telegram", json=payload, headers=VALID_HEADERS)
+    assert response.status_code == 200
+    sent_text = _patch_telegram_send.call_args[0][1]
+    assert "Status Proativo" in sent_text
 
 
 @patch("app.services.audio_service.transcribe_file", new_callable=AsyncMock)

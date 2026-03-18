@@ -583,11 +583,9 @@ CHAT_TOOLS = [
     for tool in TOOLS
 ]
 
-SENSITIVE_KEYWORDS = [
-    "apagar", "deletar", "excluir",
-    "cancelar evento", "editar agenda", "modificar evento", "remover",
-    "delete_event", "delete_task", "update_event", "update_task",
-]
+# Sensitive-action gating now lives in assistant_service/autonomy_service.
+# Keep this list empty so tool execution can route through the autonomy matrix.
+SENSITIVE_TOOLS: set[str] = set()
 
 
 def _runtime_capabilities_context() -> str:
@@ -833,8 +831,7 @@ class OpenAIService:
 
 
 def _is_sensitive_action(tool_name: str, tool_args: dict, user_text: str) -> bool:
-    text_lower = user_text.lower()
-    return any(kw in text_lower for kw in SENSITIVE_KEYWORDS)
+    return tool_name in SENSITIVE_TOOLS
 
 
 def _log_sensitive_action(db: Any, tool_name: str, tool_args: dict, user_id: str) -> dict:

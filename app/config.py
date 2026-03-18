@@ -143,6 +143,8 @@ class Settings(BaseSettings):
     openai_max_tool_rounds: int = 3
     context_max_messages: int = 20
     context_max_memories: int = 10
+    message_profile: str = "executivo_interativo"
+    autonomy_default_mode: str = "hybrid_safe"
 
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
@@ -179,9 +181,11 @@ class Settings(BaseSettings):
 
     proactive_features_enabled: bool = True
     morning_briefing_enabled: bool = True
-    morning_briefing_time: str = "08:00"
+    morning_briefing_time: str = "07:00"
+    midday_checkin_enabled: bool = True
+    midday_checkin_time: str = "13:00"
     evening_review_enabled: bool = True
-    evening_review_time: str = "18:30"
+    evening_review_time: str = "21:00"
     reminder_check_interval_minutes: int = 10
     default_timezone: str = "America/Sao_Paulo"
     approvals_enabled: bool = True
@@ -191,6 +195,9 @@ class Settings(BaseSettings):
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "07:00"
     proactive_min_interval_minutes: int = 30
+    proactive_daily_limit_per_category: int = 5
+    proactive_event_triggers_enabled: bool = True
+    proactive_pending_approval_alert_hours: int = 6
 
     google_gmail_enabled: bool = True
     google_gmail_scopes: str = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"

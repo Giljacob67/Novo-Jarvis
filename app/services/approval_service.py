@@ -25,7 +25,11 @@ def _ensure_aware(dt: datetime) -> datetime:
 VALID_ACTION_TYPES = [
     "send_email_draft",
     "create_followup_task",
+    "update_task",
+    "delete_task",
     "create_calendar_event_from_ai",
+    "update_calendar_event",
+    "delete_calendar_event",
     "send_proactive_followup_message",
     "browser_click",
     "browser_fill",
@@ -251,6 +255,27 @@ async def _dispatch_action(db: Session, user_id: str, action_type: str, payload:
         due = payload.get("due")
         return await google_tasks_service.create_task(db, user_id, title, notes=notes, due=due)
 
+    if action_type == "update_task":
+        from app.services import google_tasks as google_tasks_service
+        task_id = payload.get("task_id", "")
+        if not task_id:
+            return {"error": "Payload incompleto para atualização de tarefa (task_id)."}
+        return await google_tasks_service.update_task(
+            db,
+            user_id,
+            task_id=task_id,
+            title=payload.get("title"),
+            notes=payload.get("notes"),
+            due=payload.get("due"),
+        )
+
+    if action_type == "delete_task":
+        from app.services import google_tasks as google_tasks_service
+        task_id = payload.get("task_id", "")
+        if not task_id:
+            return {"error": "Payload incompleto para exclusão de tarefa (task_id)."}
+        return await google_tasks_service.delete_task(db, user_id, task_id=task_id)
+
     if action_type == "create_calendar_event_from_ai":
         from app.services import google_calendar as google_calendar_service
         from app.utils.date_utils import parse_datetime_local
@@ -266,6 +291,46 @@ async def _dispatch_action(db: Session, user_id: str, action_type: str, payload:
             description=payload.get("description"),
             location=payload.get("location"),
         )
+
+    if action_type == "update_calendar_event":
+        from app.services import google_calendar as google_calendar_service
+        from app.utils.date_utils import parse_datetime_local
+
+        event_id = payload.get("event_id", "")
+        if not event_id:
+            return {"error": "Payload incompleto para atualização de evento (event_id)."}
+
+        tz = payload.get("timezone", settings.default_timezone)
+        start_time = payload.get("start_time")
+        end_time = payload.get("end_time")
+        start_dt = None
+        end_dt = None
+        try:
+            if start_time:
+                start_dt = parse_datetime_local(start_time, tz)
+            if end_time:
+                end_dt = parse_datetime_local(end_time, tz)
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return await google_calendar_service.update_event(
+            db,
+            user_id,
+            event_id=event_id,
+            title=payload.get("title"),
+            start_dt=start_dt,
+            end_dt=end_dt,
+            tz=tz,
+            description=payload.get("description"),
+            location=payload.get("location"),
+        )
+
+    if action_type == "delete_calendar_event":
+        from app.services import google_calendar as google_calendar_service
+        event_id = payload.get("event_id", "")
+        if not event_id:
+            return {"error": "Payload incompleto para exclusão de evento (event_id)."}
+        return await google_calendar_service.delete_event(db, user_id, event_id=event_id)
 
     if action_type == "send_proactive_followup_message":
         return {"status": "sent", "message": payload.get("message", "")}

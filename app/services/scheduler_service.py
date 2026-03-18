@@ -99,6 +99,13 @@ async def _check_routines() -> None:
                 logger.info("Running evening review for date=%s", today_str)
                 await _send_review(user_id)
 
+    if settings.midday_checkin_enabled and _time_matches(current_time, settings.midday_checkin_time):
+        if _is_routine_enabled_for_user(user_id, "midday", True):
+            run_key = f"checkin_{today_str}"
+            if _try_claim_run("midday_checkin", run_key):
+                logger.info("Running midday check-in for date=%s", today_str)
+                await _send_checkin(user_id)
+
     if _is_routine_enabled_for_user(user_id, "reminders", True):
         reminder_key = f"reminders_{today_str}_{now.strftime('%H')}"
         if _try_claim_run("reminder_check", reminder_key):
@@ -115,7 +122,14 @@ async def _send_briefing(user_id: str) -> None:
     try:
         from app.services.proactive_service import generate_morning_briefing, send_proactive_message
         briefing = await generate_morning_briefing(db, user_id)
-        await send_proactive_message(db, user_id, briefing, subject="morning_briefing")
+        await send_proactive_message(
+            db,
+            user_id,
+            briefing,
+            subject="morning_briefing",
+            proactive_category="morning_briefing",
+            trigger_type="routine",
+        )
     except Exception:
         logger.exception("Failed to send morning briefing")
     finally:
@@ -127,9 +141,35 @@ async def _send_review(user_id: str) -> None:
     try:
         from app.services.proactive_service import generate_evening_review, send_proactive_message
         review = await generate_evening_review(db, user_id)
-        await send_proactive_message(db, user_id, review, subject="evening_review")
+        await send_proactive_message(
+            db,
+            user_id,
+            review,
+            subject="evening_review",
+            proactive_category="evening_review",
+            trigger_type="routine",
+        )
     except Exception:
         logger.exception("Failed to send evening review")
+    finally:
+        db.close()
+
+
+async def _send_checkin(user_id: str) -> None:
+    db = SessionLocal()
+    try:
+        from app.services.proactive_service import generate_midday_checkin, send_proactive_message
+        checkin = await generate_midday_checkin(db, user_id)
+        await send_proactive_message(
+            db,
+            user_id,
+            checkin,
+            subject="midday_checkin",
+            proactive_category="midday_checkin",
+            trigger_type="routine",
+        )
+    except Exception:
+        logger.exception("Failed to send midday check-in")
     finally:
         db.close()
 
@@ -140,6 +180,7 @@ async def _check_reminders(user_id: str) -> None:
         from app.services.proactive_service import (
             check_upcoming_events,
             check_due_tasks,
+            detect_event_driven_alerts,
             send_proactive_message,
         )
 
@@ -147,14 +188,39 @@ async def _check_reminders(user_id: str) -> None:
         for ev in upcoming:
             title = ev.get("title", "?")
             msg = f"⏰ Lembrete: Evento em breve — *{title}*\n{ev.get('start', '')}"
-            await send_proactive_message(db, user_id, msg, subject=f"event_reminder_{title}")
+            await send_proactive_message(
+                db,
+                user_id,
+                msg,
+                subject=f"event_reminder_{title}",
+                proactive_category="event_reminder",
+                trigger_type="routine",
+            )
 
         due_tasks = await check_due_tasks(db, user_id)
         if due_tasks:
             lines = [f"📋 *{len(due_tasks)} tarefa(s) vencendo hoje:*"]
             for t in due_tasks[:5]:
                 lines.append(f"  • {t['title']}")
-            await send_proactive_message(db, user_id, "\n".join(lines), subject="due_tasks_reminder")
+            await send_proactive_message(
+                db,
+                user_id,
+                "\n".join(lines),
+                subject="due_tasks_reminder",
+                proactive_category="deadline",
+                trigger_type="routine",
+            )
+
+        event_alerts = await detect_event_driven_alerts(db, user_id)
+        for alert in event_alerts[:8]:
+            await send_proactive_message(
+                db,
+                user_id,
+                alert.get("message", ""),
+                subject=alert.get("subject", "event_alert"),
+                proactive_category=alert.get("proactive_category", "general"),
+                trigger_type=alert.get("trigger_type", "event"),
+            )
 
     except Exception:
         logger.exception("Reminder check failed")

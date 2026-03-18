@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import re
 from datetime import date
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,6 +20,9 @@ from app.services import google_calendar as google_calendar_service
 from app.services import google_tasks as google_tasks_service
 from app.services import google_gmail_service
 from app.services import google_drive_service
+from app.services import autonomy_service
+from app.services import conversation_state_service
+from app.services import executive_service
 from app.schemas.day import DayOverview, CalendarEvent, Task, Email
 from app.utils.date_utils import parse_datetime_local
 
@@ -105,6 +110,171 @@ async def get_real_or_mock_day_overview(db: Session, user_id: str) -> DayOvervie
     )
 
 
+def _approval_details_from_tool(tool_name: str, tool_args: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]] | None:
+    if tool_name == "create_task":
+        title = tool_args.get("title", "Nova tarefa")
+        notes = tool_args.get("notes")
+        due = tool_args.get("due")
+        return (
+            "create_followup_task",
+            f"Criar tarefa: {title}",
+            "Solicitação de criação de tarefa aguardando aprovação.",
+            {"title": title, "notes": notes, "due": due},
+        )
+
+    if tool_name == "create_event":
+        title = tool_args.get("title", "Novo evento")
+        start_time = tool_args.get("start_time")
+        end_time = tool_args.get("end_time")
+        if not start_time or not end_time:
+            return None
+        return (
+            "create_calendar_event_from_ai",
+            f"Criar evento: {title}",
+            f"Evento {title} de {start_time} até {end_time}.",
+            {
+                "title": title,
+                "start_time": start_time,
+                "end_time": end_time,
+                "timezone": tool_args.get("timezone", settings.timezone),
+                "description": tool_args.get("description"),
+                "location": tool_args.get("location"),
+            },
+        )
+
+    if tool_name == "update_task":
+        task_id = tool_args.get("task_id", "")
+        if not task_id:
+            return None
+        return (
+            "update_task",
+            f"Atualizar tarefa: {task_id}",
+            "Solicitação de atualização de tarefa aguardando aprovação.",
+            {
+                "task_id": task_id,
+                "title": tool_args.get("title"),
+                "notes": tool_args.get("notes"),
+                "due": tool_args.get("due"),
+            },
+        )
+
+    if tool_name == "delete_task":
+        task_id = tool_args.get("task_id", "")
+        if not task_id:
+            return None
+        return (
+            "delete_task",
+            f"Excluir tarefa: {task_id}",
+            "Solicitação de exclusão de tarefa aguardando aprovação.",
+            {"task_id": task_id},
+        )
+
+    if tool_name == "update_event":
+        event_id = tool_args.get("event_id", "")
+        if not event_id:
+            return None
+        return (
+            "update_calendar_event",
+            f"Atualizar evento: {event_id}",
+            "Solicitação de atualização de evento aguardando aprovação.",
+            {
+                "event_id": event_id,
+                "title": tool_args.get("title"),
+                "start_time": tool_args.get("start_time"),
+                "end_time": tool_args.get("end_time"),
+                "timezone": tool_args.get("timezone", settings.timezone),
+                "description": tool_args.get("description"),
+                "location": tool_args.get("location"),
+            },
+        )
+
+    if tool_name == "delete_event":
+        event_id = tool_args.get("event_id", "")
+        if not event_id:
+            return None
+        return (
+            "delete_calendar_event",
+            f"Excluir evento: {event_id}",
+            "Solicitação de exclusão de evento aguardando aprovação.",
+            {"event_id": event_id},
+        )
+
+    if tool_name == "send_email_draft":
+        draft_id = tool_args.get("draft_id", "")
+        to = tool_args.get("to", "")
+        subject = tool_args.get("subject", "")
+        body = tool_args.get("body", "")
+        return (
+            "send_email_draft",
+            f"Enviar e-mail: {subject or '(sem assunto)'}",
+            f"Envio de e-mail para {to or 'destinatário não informado'}.",
+            {"draft_id": draft_id, "to": to, "subject": subject, "body": body},
+        )
+
+    return None
+
+
+def _maybe_create_autonomy_approval(
+    db: Session,
+    user_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> Any | None:
+    details = _approval_details_from_tool(tool_name, tool_args)
+    if not details:
+        return None
+
+    action_type, title, summary, payload = details
+    from app.services import approval_service
+
+    raw = json.dumps(
+        {"user_id": user_id, "tool_name": tool_name, "payload": payload},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    idempotency_key = f"autonomy:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:40]}"
+    return approval_service.create_pending_approval(
+        db,
+        user_id=user_id,
+        action_type=action_type,
+        title=title,
+        summary=summary,
+        payload=payload,
+        source="autonomy_guard",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _autonomy_guard(
+    db: Session | None,
+    user_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if db is None:
+        return None
+    decision = autonomy_service.evaluate_tool_execution(db, user_id, tool_name)
+    if decision.get("allow"):
+        return None
+    approval = _maybe_create_autonomy_approval(db, user_id, tool_name, tool_args or {})
+    if approval:
+        return {
+            "status": "approval_created",
+            "approval_id": approval.id,
+            "mode": decision.get("mode", settings.autonomy_default_mode),
+            "requires_confirmation": True,
+            "message": (
+                f"Ação sensível pausada pelo modo de autonomia. "
+                f"Aprovação criada (#{approval.id}). Use /approve {approval.id} para executar."
+            ),
+        }
+    return {
+        "error": decision.get("message", "Ação sensível bloqueada."),
+        "mode": decision.get("mode", settings.autonomy_default_mode),
+        "requires_confirmation": True,
+    }
+
+
 async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session | None, user_id: str) -> Any:
     if tool_name == "get_my_day":
         if db:
@@ -142,6 +312,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "create_task":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
@@ -158,6 +331,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "update_task":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
@@ -175,6 +351,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "delete_task":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
@@ -199,6 +378,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "create_event":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado. Use /connectgoogle para conectar sua conta."}
@@ -221,6 +403,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "update_event":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
@@ -246,6 +431,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "delete_event":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         status = google_oauth_service.get_status(db, user_id)
         if not status.get("connected"):
             return {"error": "Google não conectado."}
@@ -344,6 +532,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "create_email_draft":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         to = tool_args.get("to", "")
         subject = tool_args.get("subject", "")
         body = tool_args.get("body", "")
@@ -352,6 +543,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "create_reply_draft":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         message_id = tool_args.get("message_id", "")
         body = tool_args.get("body", "")
         return await google_gmail_service.create_reply_draft(db, user_id, message_id=message_id, body=body)
@@ -365,6 +559,9 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
     if tool_name == "send_email_draft":
         if not db:
             return {"error": "Banco não disponível"}
+        guarded = _autonomy_guard(db, user_id, tool_name, tool_args)
+        if guarded:
+            return guarded
         draft_id = tool_args.get("draft_id", "")
         to = tool_args.get("to", "")
         subject = tool_args.get("subject", "")
@@ -572,10 +769,17 @@ async def tool_executor(tool_name: str, tool_args: dict[str, Any], db: Session |
 
 
 def _log_action(db: Session, event_type: str, status: str, details: dict) -> None:
+    enriched = {
+        "intent": None,
+        "confidence": None,
+        "trigger_type": None,
+        "proactive_category": None,
+    }
+    enriched.update(details or {})
     entry = ActionLog(
         event_type=event_type,
         status=status,
-        details_json=json.dumps(details, ensure_ascii=False),
+        details_json=json.dumps(enriched, ensure_ascii=False),
     )
     db.add(entry)
     db.commit()
@@ -654,6 +858,8 @@ def _save_message(db: Session, conversation_id: int, role: str, text: str, chann
 
 async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dict | None = None, channel: str = "telegram") -> str:
     conv = _get_or_create_conversation(db, user_id)
+    state = conversation_state_service.update_state_from_text(db, user_id, text)
+    augmented_text = conversation_state_service.augment_text_with_state(db, user_id, text)
 
     _save_message(
         db, conv.id, role="user", text=text,
@@ -669,26 +875,59 @@ async def handle_free_text(db: Session, user_id: str, text: str, raw_update: dic
             "No momento, a navegação web não está ativa aqui. "
             "Se quiser, o administrador pode habilitar browser supervisionado (domínios permitidos)."
         )
-        if _is_news_or_web_search_intent(text):
+        if _is_news_or_web_search_intent(augmented_text):
             _save_message(db, conv.id, role="assistant", text=fallback_reply)
             return fallback_reply
 
-        if _is_affirmative(text):
+        if _is_affirmative(augmented_text):
             prev_assistant = next((m for m in reversed(recent[:-1]) if m.role == "assistant"), None)
             if prev_assistant and _looks_like_web_offer(prev_assistant.text):
                 _save_message(db, conv.id, role="assistant", text=fallback_reply)
                 return fallback_reply
 
     memories = list_memories(db, user_id, limit=settings.context_max_memories)
+    if state:
+        memories = [
+            SimpleNamespace(
+                category="context_state",
+                content=(
+                    f"Intento atual={state.last_intent}; entidade={state.last_entity or '-'}; "
+                    f"pendência={state.pending_action or '-'}; confiança={state.confidence:.2f}"
+                ),
+            ),
+            *memories,
+        ]
+
+    if (text or "").strip().lower() in {"resolve isso", "faça isso", "faz isso"}:
+        card = await executive_service.build_context_card(db, user_id)
+        actions = executive_service.suggest_next_actions(card, limit=3)
+        reply = (
+            "🛠️ *Plano rápido para resolver agora*\n\n"
+            "*Feito (automático)*\n"
+            "• Reorganizei prioridades com base no seu contexto atual.\n\n"
+            "*Pendente (próximos passos)*\n"
+            + "\n".join(f"• {a}" for a in actions)
+            + "\n\n*Preciso de você*\n"
+            "• Me diga `1`, `2` ou `3` para eu executar o próximo passo."
+        )
+        _save_message(db, conv.id, role="assistant", text=reply)
+        return reply
 
     reply = await _openai_service.generate_reply(
         user_id=user_id,
-        user_text=text,
+        user_text=augmented_text,
         recent_messages=history,
         memories=memories,
         tool_executor=tool_executor,
         db=db,
     )
+
+    if settings.message_profile == "executivo_interativo":
+        try:
+            card = await executive_service.build_context_card(db, user_id)
+            reply = executive_service.ensure_actionable_tail(reply, card)
+        except Exception:
+            logger.exception("Failed to apply executive response composer")
 
     _save_message(db, conv.id, role="assistant", text=reply)
 
