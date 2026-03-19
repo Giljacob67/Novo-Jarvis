@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     )
     openrouter_model: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openai_model: str = "gpt-5-mini"
+    openai_model: str = "gpt-4o-mini"
     openai_max_tool_rounds: int = 3
     context_max_messages: int = 20
     context_max_memories: int = 10
