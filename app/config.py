@@ -148,7 +148,7 @@ class Settings(BaseSettings):
             "GOOGLE_API_KEY",
         ),
     )
-    gemini_model: str = "gemini-2.5-flash-lite-preview"
+    gemini_model: str = "gemini-3.1-flash-lite-preview"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     openai_max_tool_rounds: int = 3
     context_max_messages: int = 20
