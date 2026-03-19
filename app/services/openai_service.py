@@ -619,17 +619,22 @@ class OpenAIService:
 
     def _effective_provider(self) -> str:
         provider = (settings.llm_provider or "openai").strip().lower()
-        return provider if provider in {"openai", "openrouter"} else "openai"
+        return provider if provider in {"openai", "openrouter", "gemini"} else "openai"
 
     def _effective_model(self) -> str:
-        if self._effective_provider() == "openrouter" and settings.openrouter_model.strip():
+        provider = self._effective_provider()
+        if provider == "openrouter" and settings.openrouter_model.strip():
             return settings.openrouter_model.strip()
+        if provider == "gemini":
+            return settings.gemini_model
         return settings.openai_model
 
     def _get_client(self) -> Any:
         provider = self._effective_provider()
         if provider == "openrouter":
             api_key = settings.openrouter_api_key or settings.openai_api_key
+        elif provider == "gemini":
+            api_key = settings.gemini_api_key
         else:
             api_key = settings.openai_api_key
 
@@ -648,6 +653,11 @@ class OpenAIService:
                     api_key=api_key,
                     base_url=settings.openrouter_base_url,
                     default_headers=headers,
+                )
+            elif provider == "gemini":
+                self._client = OpenAI(
+                    api_key=api_key,
+                    base_url=settings.gemini_base_url,
                 )
             else:
                 self._client = OpenAI(api_key=api_key)
@@ -683,7 +693,7 @@ class OpenAIService:
         input_messages.extend(recent_messages)
         input_messages.append({"role": "user", "content": user_text})
 
-        if self._effective_provider() == "openrouter":
+        if self._effective_provider() in {"openrouter", "gemini"}:
             return await self._generate_reply_openrouter(
                 client=client,
                 user_id=user_id,

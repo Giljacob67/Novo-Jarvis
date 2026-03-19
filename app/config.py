@@ -140,6 +140,16 @@ class Settings(BaseSettings):
     openrouter_model: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openai_model: str = "gpt-4o-mini"
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "GEMINI_API_KEY",
+            "GOOGLE_GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ),
+    )
+    gemini_model: str = "gemini-2.5-flash-lite-preview"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     openai_max_tool_rounds: int = 3
     context_max_messages: int = 20
     context_max_memories: int = 10

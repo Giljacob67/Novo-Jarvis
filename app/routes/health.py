@@ -31,6 +31,7 @@ async def debug_telegram():
     # Test LLM connectivity
     llm_status = "not_tested"
     llm_error = None
+    svc = None
     try:
         from app.services.openai_service import OpenAIService
         svc = OpenAIService()
@@ -50,9 +51,11 @@ async def debug_telegram():
             "status": llm_status,
             "error": llm_error,
             "provider": settings.llm_provider,
-            "model": settings.openai_model,
+            "effective_model": svc._effective_model() if svc is not None else "unknown",
             "openai_api_key_configured": bool(settings.openai_api_key),
             "openrouter_api_key_configured": bool(settings.openrouter_api_key),
+            "gemini_api_key_configured": bool(settings.gemini_api_key),
+            "gemini_model": settings.gemini_model,
             "openrouter_model": settings.openrouter_model or "(fallback to openai_model)",
         },
         "config": {
