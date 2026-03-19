@@ -683,10 +683,24 @@ async def telegram_webhook(
 
         persisted = _mark_update_processed(db, update.update_id, user_id)
         return TelegramWebhookResponse(ok=True, message="processed" if persisted else "duplicate")
-    except Exception:
+    except Exception as _exc:
         # Don't mark this update as processed on failure: Telegram will retry.
         db.rollback()
-        logger.exception("Telegram webhook processing failed for update_id=%s", update.update_id)
+        logger.exception(
+            "Telegram webhook processing failed for update_id=%s | %s: %s",
+            update.update_id,
+            type(_exc).__name__,
+            _exc,
+        )
+        # Try to notify user in Telegram so the error is visible (best-effort)
+        try:
+            _error_preview = f"{type(_exc).__name__}: {str(_exc)[:200]}"
+            await telegram_service.send_message(
+                chat_id,
+                f"⚠️ Erro interno ao processar sua mensagem. Detalhes nos logs do servidor.\n`{_error_preview}`",
+            )
+        except Exception:
+            pass  # If sending the error message also fails, just ignore
         return JSONResponse(
             status_code=500,
             content=TelegramWebhookResponse(ok=False, message="temporary_error").model_dump(),
