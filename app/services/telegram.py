@@ -8,6 +8,41 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://api.telegram.org/bot{token}"
 _FILE_URL = "https://api.telegram.org/file/bot{token}/{file_path}"
 
+_TELEGRAM_MAX_LEN = 4096
+
+
+def _split_message(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> list[str]:
+    """Split a long message into chunks that respect Telegram's character limit.
+
+    Splits preferably on paragraph breaks, then newlines, then spaces,
+    so words are never cut in the middle.
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+
+        # Try to break at a paragraph boundary first
+        cut = text.rfind("\n\n", 0, max_len)
+        if cut == -1:
+            # Fallback: last newline
+            cut = text.rfind("\n", 0, max_len)
+        if cut == -1:
+            # Fallback: last space
+            cut = text.rfind(" ", 0, max_len)
+        if cut == -1:
+            # Hard cut — no whitespace found
+            cut = max_len
+
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+
+    return [c for c in chunks if c]
+
 
 class TelegramService:
     def __init__(self, bot_token: str) -> None:
@@ -30,20 +65,29 @@ class TelegramService:
         return self._client
 
     async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        """Send a text message, splitting into multiple chunks if it exceeds Telegram's 4096-char limit."""
         url = f"{self._base}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        logger.info("Sending message to chat_id=%s (len=%d)", chat_id, len(text))
-        resp = await self.client.post(url, json=payload)
-        if resp.status_code == 400:
-            # Fallback for Markdown entity parsing errors or other formatting issues.
-            logger.warning(
-                "Telegram rejected Markdown message (chat_id=%s). Falling back to plain text.",
-                chat_id,
-            )
-            fallback_payload = {"chat_id": chat_id, "text": text}
-            resp = await self.client.post(url, json=fallback_payload)
-        resp.raise_for_status()
-        return resp.json()
+        chunks = _split_message(text)
+        logger.info(
+            "Sending message to chat_id=%s (len=%d, chunks=%d)",
+            chat_id, len(text), len(chunks),
+        )
+        last_response: dict[str, Any] = {}
+        for chunk in chunks:
+            payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"}
+            resp = await self.client.post(url, json=payload)
+            if resp.status_code == 400:
+                # Fallback: Markdown parse error → retry as plain text
+                logger.warning(
+                    "Telegram rejected Markdown chunk (chat_id=%s, len=%d). "
+                    "Falling back to plain text.",
+                    chat_id, len(chunk),
+                )
+                fallback_payload = {"chat_id": chat_id, "text": chunk}
+                resp = await self.client.post(url, json=fallback_payload)
+            resp.raise_for_status()
+            last_response = resp.json()
+        return last_response
 
     async def set_webhook(self, url: str, secret_token: str = "") -> dict[str, Any]:
         api_url = f"{self._base}/setWebhook"
